@@ -4,11 +4,9 @@ import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import { YoutubeTranscript } from 'youtube-transcript';
-import OpenAI from "openai";
-
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+import Anthropic from "@anthropic-ai/sdk";
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
 export async function registerRoutes(
@@ -70,14 +68,20 @@ export async function registerRoutes(
       // 4. Summarize
       let summary = "";
       try {
-        const response = await openai.chat.completions.create({
-          model: "gpt-5.2",
-          messages: [
-            { role: "system", content: "You are an expert video summarizer. Summarize the following video transcript efficiently. Focus on key points and takeaways. Format with Markdown." },
-            { role: "user", content: transcriptText.slice(0, 50000) } // Limit context just in case
-          ],
-        });
-        summary = response.choices[0].message.content || "No summary generated.";
+   const response = await anthropic.messages.create({
+  model: "claude-sonnet-4-20250514",
+  max_tokens: 2048,
+  messages: [
+    { 
+      role: "user", 
+      content: `You are an expert video summarizer. Summarize the following video transcript efficiently. Focus on key points and takeaways. Format with Markdown.
+
+Transcript:
+${transcriptText.slice(0, 100000)}`
+    }
+  ],
+});
+summary = response.content[0].type === 'text' ? response.content[0].text : "No summary generated.";
       } catch (e) {
         console.error("OpenAI Error:", e);
         return res.status(500).json({ message: "Failed to generate summary" });

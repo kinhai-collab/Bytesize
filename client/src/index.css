@@ -1,0 +1,100 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;500;600&family=Outfit:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: 'DM Sans', sans-serif;
+  --font-display: 'Outfit', sans-serif;
+
+  /* Clean, premium monochrome base with vibrant accents */
+  --background: 0 0% 100%;
+  --foreground: 240 10% 4%;
+  
+  /* Primary: Vibrant Violet/Indigo for AI feel */
+  --primary: 256 85% 55%;
+  --primary-foreground: 0 0% 100%;
+  
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 4%;
+  
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 4%;
+  
+  --secondary: 240 5% 96%;
+  --secondary-foreground: 240 6% 10%;
+  
+  --muted: 240 5% 96%;
+  --muted-foreground: 240 4% 46%;
+  
+  --accent: 256 85% 97%;
+  --accent-foreground: 256 85% 45%;
+  
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+
+  --border: 240 6% 90%;
+  --input: 240 6% 90%;
+  --ring: 256 85% 55%;
+  
+  --radius: 0.75rem;
+}
+
+.dark {
+  --background: 240 10% 4%;
+  --foreground: 0 0% 98%;
+  
+  --card: 240 10% 6%;
+  --card-foreground: 0 0% 98%;
+  
+  --popover: 240 10% 6%;
+  --popover-foreground: 0 0% 98%;
+  
+  --primary: 256 85% 65%;
+  --primary-foreground: 240 10% 4%;
+  
+  --secondary: 240 4% 16%;
+  --secondary-foreground: 0 0% 98%;
+  
+  --muted: 240 4% 16%;
+  --muted-foreground: 240 5% 65%;
+  
+  --accent: 256 85% 15%;
+  --accent-foreground: 256 85% 75%;
+  
+  --destructive: 0 63% 31%;
+  --destructive-foreground: 0 0% 98%;
+  
+  --border: 240 4% 16%;
+  --input: 240 4% 16%;
+  --ring: 256 85% 65%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    @apply tracking-tight font-bold;
+  }
+}
+
+/* Custom scrollbar for transcripts */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-muted-foreground/20 rounded-full;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/40;
+}

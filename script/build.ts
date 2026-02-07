@@ -1,3 +1,11 @@
+import { readdir, access } from "fs/promises";
+
+console.log("[DEBUG] Build script started on Railway");
+console.log("[DEBUG] Current working dir:", process.cwd());
+console.log("[DEBUG] Root directory contents:", await readdir(".").catch(err => "Error reading root: " + err.message));
+console.log("[DEBUG] server/index.ts exists?", await access("server/index.ts").then(() => "YES").catch(() => "NO"));
+console.log("[DEBUG] package.json exists?", await access("package.json").then(() => "YES").catch(() => "NO"));
+
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
 import { rm, readFile } from "fs/promises";

@@ -38,6 +38,7 @@ export default function Home() {
   const [selectedChannelId, setSelectedChannelId] = useState<number | "all">("all");
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [updatingId, setUpdatingId] = useState<number | null>(null);
+  const [updatingAll, setUpdatingAll] = useState(false);
   const [removingId, setRemovingId] = useState<number | null>(null);
 
   const { data: videos = [], isLoading: videosLoading } = useVideos();
@@ -127,7 +128,7 @@ export default function Home() {
     if (selectedChannelId === "all") return videos;
     const channel = channels.find((item) => item.id === selectedChannelId);
     if (!channel) return videos;
-    return videos.filter((video) => video.sourceChannelId === channel.channelId);
+    return videos.filter((video) => matchesVideoChannel(video, channel));
   }, [channels, selectedChannelId, videos]);
 
   const totalHoursSaved = Math.max(1, Math.round(videos.length * 0.25));
@@ -175,6 +176,32 @@ export default function Home() {
       });
     } finally {
       setUpdatingId(null);
+    }
+  };
+
+  const handleUpdateAllChannels = async () => {
+    setUpdatingAll(true);
+    try {
+      const res = await fetch("/api/channels/update-all", {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.message || "Failed to update channels");
+
+      queryClient.invalidateQueries({ queryKey: [api.videos.list.path] });
+      queryClient.invalidateQueries({ queryKey: ["channels"] });
+      toast({
+        title: data.summarized > 0 ? `${data.summarized} new summaries` : "All channels checked",
+        description: data.message,
+      });
+    } catch (err: any) {
+      toast({
+        title: "Update failed",
+        description: err.message || "Something went wrong. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setUpdatingAll(false);
     }
   };
 
@@ -233,11 +260,13 @@ export default function Home() {
             channelInput={channelInput}
             removingId={removingId}
             showAddChannel={showAddChannel}
+            updatingAll={updatingAll}
             updatingId={updatingId}
             onAddChannel={handleAddChannel}
             onChannelInputChange={setChannelInput}
             onRemoveChannel={handleRemoveChannel}
             onShowAddChannelChange={setShowAddChannel}
+            onUpdateAllChannels={handleUpdateAllChannels}
             onUpdateChannel={handleUpdateChannel}
           />
         )}
@@ -323,8 +352,8 @@ function ChannelFilterRow({
   const allNewCount = Array.from(recentCounts.values()).reduce((sum, count) => sum + count, 0);
 
   return (
-    <div className="overflow-x-auto border-b border-[#E3E3EA] pb-4">
-      <div className="flex min-w-max items-start gap-4">
+    <div className="overflow-x-auto border-b border-[#E3E3EA] px-1 pb-4 pt-2">
+      <div className="flex min-w-max items-start gap-4 py-1">
         <button
           type="button"
           onClick={() => onSelect("all")}
@@ -415,11 +444,13 @@ function RightPanel({
   channelInput,
   removingId,
   showAddChannel,
+  updatingAll,
   updatingId,
   onAddChannel,
   onChannelInputChange,
   onRemoveChannel,
   onShowAddChannelChange,
+  onUpdateAllChannels,
   onUpdateChannel,
 }: {
   channels: Channel[];
@@ -431,11 +462,13 @@ function RightPanel({
   channelInput: string;
   removingId: number | null;
   showAddChannel: boolean;
+  updatingAll: boolean;
   updatingId: number | null;
   onAddChannel: (event?: React.FormEvent) => void;
   onChannelInputChange: (value: string) => void;
   onRemoveChannel: (channel: Channel) => void;
   onShowAddChannelChange: (value: boolean) => void;
+  onUpdateAllChannels: () => void;
   onUpdateChannel: (channel: Channel) => void;
 }) {
   return (
@@ -454,13 +487,23 @@ function RightPanel({
         <section>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-foreground">Channels</h2>
-            {channelsLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 rounded-lg border-[#DCDCE6] text-xs font-semibold text-[#7F77DD] hover:bg-[#F1F0FF] hover:text-[#7F77DD]"
+              onClick={onUpdateAllChannels}
+              disabled={channelsLoading || updatingAll || channels.length === 0}
+            >
+              {updatingAll ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+              Update all
+            </Button>
           </div>
 
           <div className="space-y-2">
             {channels.map((channel) => {
               const newCount = recentCounts.get(channel.channelId) || 0;
-              const isUpdating = updatingId === channel.id;
+              const isUpdating = updatingAll || updatingId === channel.id;
               const isRemoving = removingId === channel.id;
 
               return (
@@ -604,5 +647,32 @@ function stripMarkdown(value: string) {
   return value
     .replace(/[#*_>`~-]/g, "")
     .replace(/\s+/g, " ")
+    .trim();
+}
+
+function matchesVideoChannel(video: Video, channel: Channel) {
+  if (video.sourceChannelId === channel.channelId) return true;
+
+  const sourceName = normalizeMatchText(video.sourceChannelName || "");
+  const channelName = normalizeMatchText(channel.channelName);
+  if (sourceName && (sourceName === channelName || sourceName.includes(channelName))) {
+    return true;
+  }
+
+  const title = normalizeMatchText(video.title);
+  const channelAliases = [
+    channelName,
+    channelName.replace(/\bpodcast\b/g, "").trim(),
+    channelName.replace(/\bofficial\b/g, "").trim(),
+  ].filter(Boolean);
+
+  return channelAliases.some((alias) => alias.length >= 3 && title.includes(alias));
+}
+
+function normalizeMatchText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/&amp;/g, "&")
+    .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }

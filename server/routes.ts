@@ -189,6 +189,182 @@ function shouldRecoverInitialBackfill(channel: { createdAt: Date | null }) {
   return channel.createdAt >= BROKEN_INITIAL_CHECK_CUTOFF;
 }
 
+async function updateFollowedChannel(channelId: number) {
+  const channels = await storage.getChannels();
+  let channel = channels.find((c) => c.id === channelId);
+
+  if (!channel) {
+    const notFound = new Error("Channel not found");
+    (notFound as any).statusCode = 404;
+    throw notFound;
+  }
+
+  const resolvedChannel = await resolveYouTubeChannel(channel.channelUrl);
+  if (
+    resolvedChannel &&
+    (resolvedChannel.channelId !== channel.channelId ||
+      resolvedChannel.channelName !== channel.channelName ||
+      resolvedChannel.channelThumbnailUrl !== channel.channelThumbnailUrl)
+  ) {
+    channel = await storage.updateChannel(channelId, {
+      channelId: resolvedChannel.channelId,
+      channelName: resolvedChannel.channelName,
+      channelThumbnailUrl: resolvedChannel.channelThumbnailUrl,
+    });
+  }
+
+  const lastChecked = isInitialChannelCheck(channel)
+    ? NEVER_CHECKED.toISOString()
+    : channel.lastCheckedAt?.toISOString() || NEVER_CHECKED.toISOString();
+  const videosRes = await fetch(
+    `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&publishedAfter=${lastChecked}&maxResults=25&key=${YOUTUBE_API_KEY}`,
+  );
+  let videosData = await videosRes.json();
+  let usedInitialBackfill = false;
+
+  if (!videosData.items || videosData.items.length === 0) {
+    if (shouldRecoverInitialBackfill(channel)) {
+      const backfillRes = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&maxResults=25&key=${YOUTUBE_API_KEY}`,
+      );
+      videosData = await backfillRes.json();
+      usedInitialBackfill = Boolean(videosData.items?.length);
+    }
+
+    if (!videosData.items || videosData.items.length === 0) {
+      await storage.updateChannelLastChecked(channelId);
+      return {
+        channelId,
+        channelName: channel.channelName,
+        message: "No new videos found",
+        summarized: 0,
+        reusedCached: 0,
+        updatedCachedMetadata: 0,
+        skippedNoTranscript: 0,
+        skippedShortTranscript: 0,
+        failed: 0,
+        videos: [],
+      };
+    }
+  }
+
+  const summarized = [];
+  let reusedCached = 0;
+  let updatedCachedMetadata = 0;
+  let skippedNoTranscript = 0;
+  let skippedShortTranscript = 0;
+  let failed = 0;
+
+  for (const item of videosData.items) {
+    const videoId = item.id.videoId;
+    const videoTitle = item.snippet.title;
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+    try {
+      const videoDetails = await fetchVideoDetails(videoId);
+      const sourceChannelId = videoDetails?.sourceChannelId || channel.channelId;
+      const sourceChannelName = videoDetails?.sourceChannelName || channel.channelName;
+      const duration = videoDetails?.duration || null;
+      const cachedVideo = await getCachedVideoByYouTubeId(videoId);
+
+      if (cachedVideo) {
+        reusedCached++;
+        if (
+          cachedVideo.sourceChannelId !== sourceChannelId ||
+          cachedVideo.sourceChannelName !== sourceChannelName ||
+          cachedVideo.duration !== duration
+        ) {
+          await storage.updateVideo(cachedVideo.id, {
+            sourceChannelId,
+            sourceChannelName,
+            duration,
+          });
+          updatedCachedMetadata++;
+        }
+        continue;
+      }
+
+      const transcriptRes = await fetch(
+        `https://youtube-transcripts.p.rapidapi.com/youtube/transcript?url=${encodeURIComponent(videoUrl)}`,
+        {
+          headers: {
+            "x-rapidapi-key": RAPIDAPI_KEY!,
+            "x-rapidapi-host": "youtube-transcripts.p.rapidapi.com",
+          },
+        },
+      );
+
+      if (!transcriptRes.ok) {
+        skippedNoTranscript++;
+        continue;
+      }
+
+      const transcriptData = await transcriptRes.json();
+      let transcriptText = "";
+      if (transcriptData.content && Array.isArray(transcriptData.content)) {
+        transcriptText = transcriptData.content
+          .map((i: any) => i.text || "")
+          .join(" ");
+      }
+
+      if (!transcriptText || transcriptText.length < 50) {
+        skippedShortTranscript++;
+        continue;
+      }
+
+      const summaryRes = await anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 2048,
+        messages: [
+          {
+            role: "user",
+            content: `You are an expert video summarizer. Write a detailed summary.\n\nVideo: ${videoTitle}\n\nTranscript:\n${transcriptText.slice(0, 100000)}`,
+          },
+        ],
+      });
+
+      const summary =
+        summaryRes.content[0].type === "text"
+          ? summaryRes.content[0].text
+          : "No summary.";
+
+      const savedVideo = await storage.createVideo({
+        url: videoUrl,
+        title: videoTitle,
+        thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+        sourceChannelId,
+        sourceChannelName,
+        duration,
+        transcript: transcriptText,
+        summary,
+      });
+
+      summarized.push(savedVideo);
+    } catch (e) {
+      console.error(`Failed to process video ${videoId}:`, e);
+      failed++;
+    }
+  }
+
+  await storage.updateChannelLastChecked(channelId);
+
+  return {
+    channelId,
+    channelName: channel.channelName,
+    message:
+      summarized.length > 0 || reusedCached > 0
+        ? `${usedInitialBackfill ? "Recovered initial channel backfill. " : ""}Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and reused ${reusedCached} cached summary/summaries` : ""}`
+        : `Found ${videosData.items.length} recent video(s), but none could be summarized. ${skippedNoTranscript + skippedShortTranscript} had no usable transcript${failed ? ` and ${failed} failed while processing` : ""}.`,
+    summarized: summarized.length,
+    reusedCached,
+    updatedCachedMetadata,
+    skippedNoTranscript,
+    skippedShortTranscript,
+    failed,
+    videos: summarized,
+  };
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express,
@@ -410,6 +586,38 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/channels/update-all", async (req, res) => {
+    try {
+      const channels = await storage.getChannels();
+      const results = [];
+
+      for (const channel of channels) {
+        results.push(await updateFollowedChannel(channel.id));
+      }
+
+      const summarized = results.reduce((total, result) => total + result.summarized, 0);
+      const reusedCached = results.reduce((total, result) => total + result.reusedCached, 0);
+      const updatedCachedMetadata = results.reduce(
+        (total, result) => total + result.updatedCachedMetadata,
+        0,
+      );
+
+      res.json({
+        message:
+          summarized > 0
+            ? `Found and summarized ${summarized} new video(s) across ${channels.length} channel(s).`
+            : `Checked ${channels.length} channel(s). No new summaries were needed.`,
+        summarized,
+        reusedCached,
+        updatedCachedMetadata,
+        results,
+      });
+    } catch (err: any) {
+      console.error("Update all channels error:", err);
+      res.status(500).json({ message: err.message || "Failed to update channels" });
+    }
+  });
+
   // POST /api/channels/:id/update — checks for new videos and summarizes them
   // The ":id" part means the channel's ID number gets passed in the URL
   app.post("/api/channels/:id/update", async (req, res) => {
@@ -441,7 +649,7 @@ export async function registerRoutes(
         ? NEVER_CHECKED.toISOString()
         : channel.lastCheckedAt?.toISOString() || NEVER_CHECKED.toISOString();
       const videosRes = await fetch(
-        `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&publishedAfter=${lastChecked}&maxResults=10&key=${YOUTUBE_API_KEY}`,
+        `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&publishedAfter=${lastChecked}&maxResults=25&key=${YOUTUBE_API_KEY}`,
       );
       let videosData = await videosRes.json();
       let usedInitialBackfill = false;
@@ -449,7 +657,7 @@ export async function registerRoutes(
       if (!videosData.items || videosData.items.length === 0) {
         if (shouldRecoverInitialBackfill(channel)) {
           const backfillRes = await fetch(
-            `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&maxResults=10&key=${YOUTUBE_API_KEY}`,
+            `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&maxResults=25&key=${YOUTUBE_API_KEY}`,
           );
           videosData = await backfillRes.json();
           usedInitialBackfill = Boolean(videosData.items?.length);
@@ -464,6 +672,7 @@ export async function registerRoutes(
 
       const summarized = []; // We'll collect all newly summarized videos here
       let reusedCached = 0;
+      let updatedCachedMetadata = 0;
       let skippedNoTranscript = 0;
       let skippedShortTranscript = 0;
       let failed = 0;
@@ -475,12 +684,27 @@ export async function registerRoutes(
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`; // Full URL
 
         try {
+          const videoDetails = await fetchVideoDetails(videoId);
+          const sourceChannelId = videoDetails?.sourceChannelId || channel.channelId;
+          const sourceChannelName = videoDetails?.sourceChannelName || channel.channelName;
+          const duration = videoDetails?.duration || null;
           const cachedVideo = await getCachedVideoByYouTubeId(videoId);
           if (cachedVideo) {
             reusedCached++;
+            if (
+              cachedVideo.sourceChannelId !== sourceChannelId ||
+              cachedVideo.sourceChannelName !== sourceChannelName ||
+              cachedVideo.duration !== duration
+            ) {
+              await storage.updateVideo(cachedVideo.id, {
+                sourceChannelId,
+                sourceChannelName,
+                duration,
+              });
+              updatedCachedMetadata++;
+            }
             continue;
           }
-          const videoDetails = await fetchVideoDetails(videoId);
 
           // Fetch the transcript for this video (same as existing summarize feature)
           const transcriptRes = await fetch(
@@ -533,9 +757,9 @@ export async function registerRoutes(
             url: videoUrl,
             title: videoTitle,
             thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-            sourceChannelId: videoDetails?.sourceChannelId || channel.channelId,
-            sourceChannelName: videoDetails?.sourceChannelName || channel.channelName,
-            duration: videoDetails?.duration || null,
+            sourceChannelId,
+            sourceChannelName,
+            duration,
             transcript: transcriptText,
             summary,
           });
@@ -559,6 +783,7 @@ export async function registerRoutes(
             : `Found ${videosData.items.length} recent video(s), but none could be summarized. ${skippedNoTranscript + skippedShortTranscript} had no usable transcript${failed ? ` and ${failed} failed while processing` : ""}.`,
         summarized: summarized.length,
         reusedCached,
+        updatedCachedMetadata,
         skippedNoTranscript,
         skippedShortTranscript,
         failed,

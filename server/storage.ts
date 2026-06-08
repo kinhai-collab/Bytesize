@@ -16,6 +16,10 @@ import { db } from "./db";
 // "eq" means "equals", "desc" means "descending order" (newest first)
 import { eq, desc } from "drizzle-orm";
 
+function normalizeVideo(video: Video): Video {
+  return video.summary && !video.processed ? { ...video, processed: true } : video;
+}
+
 // This is the "interface" — think of it as a menu of all available database functions
 // It describes WHAT functions exist, but not HOW they work yet
 export interface IStorage {
@@ -27,6 +31,7 @@ export interface IStorage {
 
   createChannel(channel: InsertChannel): Promise<Channel>; // Save a new channel
   getChannels(): Promise<Channel[]>; // Get all saved channels
+  deleteChannel(id: number): Promise<void>; // Stop tracking a channel
   updateChannelLastChecked(id: number): Promise<void>; // Record when we last checked
 }
 
@@ -36,19 +41,23 @@ export class DatabaseStorage implements IStorage {
 
   // Saves a new video to the database and returns it
   async createVideo(insertVideo: InsertVideo): Promise<Video> {
-    const [video] = await db.insert(videos).values(insertVideo).returning();
-    return video;
+    const [video] = await db
+      .insert(videos)
+      .values({ ...insertVideo, processed: Boolean(insertVideo.summary) })
+      .returning();
+    return normalizeVideo(video);
   }
 
   // Gets all videos, newest first
   async getVideos(): Promise<Video[]> {
-    return await db.select().from(videos).orderBy(desc(videos.createdAt));
+    const videoList = await db.select().from(videos).orderBy(desc(videos.createdAt));
+    return videoList.map(normalizeVideo);
   }
 
   // Gets one specific video by its ID number
   async getVideo(id: number): Promise<Video | undefined> {
     const [video] = await db.select().from(videos).where(eq(videos.id, id));
-    return video;
+    return video ? normalizeVideo(video) : undefined;
   }
 
   // Deletes a video by its ID number
@@ -63,7 +72,7 @@ export class DatabaseStorage implements IStorage {
       .set(video)
       .where(eq(videos.id, id))
       .returning();
-    return updatedVideo;
+    return normalizeVideo(updatedVideo);
   }
 
   // ── CHANNEL FUNCTIONS (these are new) ───────────────────────────────────
@@ -80,6 +89,11 @@ export class DatabaseStorage implements IStorage {
   // Gets all saved channels, newest first
   async getChannels(): Promise<Channel[]> {
     return await db.select().from(channels).orderBy(desc(channels.createdAt));
+  }
+
+  // Deletes a channel so it is no longer tracked
+  async deleteChannel(id: number): Promise<void> {
+    await db.delete(channels).where(eq(channels.id, id));
   }
 
   // Updates the "last checked" time to RIGHT NOW for a specific channel

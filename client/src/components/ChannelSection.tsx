@@ -114,23 +114,33 @@ export function ChannelSection() {
         method: "POST", // POST to trigger the update
       });
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.message || "Failed to update channel");
+      }
 
       // Refresh the video list so new summaries appear immediately
       queryClient.invalidateQueries({ queryKey: ["/api/videos"] });
       queryClient.invalidateQueries({ queryKey: ["channels"] });
 
       // Show a message telling the user how many new videos were found
+      const reusedCached = data.reusedCached || 0;
+      const skipped =
+        (data.skippedNoTranscript || 0) + (data.skippedShortTranscript || 0);
       toast({
         title:
           data.summarized > 0
-            ? `Found ${data.summarized} new video(s)! 🎉`
-            : "All caught up!",
+            ? `Found ${data.summarized} new video(s)!`
+            : reusedCached > 0
+              ? `Reused ${reusedCached} saved summary/summaries`
+              : skipped > 0 || data.failed > 0
+                ? "No usable transcripts found"
+                : "All caught up!",
         description: data.message,
       });
-    } catch (err) {
+    } catch (err: any) {
       toast({
         title: "Update failed",
-        description: "Something went wrong. Please try again.",
+        description: err.message || "Something went wrong. Please try again.",
         variant: "destructive",
       });
     } finally {

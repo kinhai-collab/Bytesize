@@ -18,6 +18,7 @@ const openai = new OpenAI({
 
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY; // Our new YouTube Data API key
+const NEVER_CHECKED = new Date(0);
 
 function extractYouTubeVideoId(url: string): string {
   try {
@@ -42,6 +43,11 @@ async function getCachedVideoByYouTubeId(videoId: string) {
     const cachedVideoId = extractYouTubeVideoId(video.url);
     return cachedVideoId === videoId && Boolean(video.summary);
   });
+}
+
+function isInitialChannelCheck(channel: { createdAt: Date | null; lastCheckedAt: Date | null }) {
+  if (!channel.createdAt || !channel.lastCheckedAt) return true;
+  return Math.abs(channel.createdAt.getTime() - channel.lastCheckedAt.getTime()) < 5000;
 }
 
 export async function registerRoutes(
@@ -258,7 +264,7 @@ export async function registerRoutes(
         channelUrl,
         channelName,
         channelId,
-        lastCheckedAt: new Date(), // Set "last checked" to right now
+        lastCheckedAt: NEVER_CHECKED, // First update should pull recent videos
       });
 
       res.status(201).json(channel); // Send the saved channel back to the frontend
@@ -281,8 +287,9 @@ export async function registerRoutes(
 
       // Ask YouTube for the most recent videos from this channel
       // "publishedAfter" means only get videos newer than when we last checked
-      const lastChecked =
-        channel.lastCheckedAt?.toISOString() || new Date(0).toISOString();
+      const lastChecked = isInitialChannelCheck(channel)
+        ? NEVER_CHECKED.toISOString()
+        : channel.lastCheckedAt?.toISOString() || NEVER_CHECKED.toISOString();
       const videosRes = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&publishedAfter=${lastChecked}&maxResults=10&key=${YOUTUBE_API_KEY}`,
       );
@@ -296,6 +303,9 @@ export async function registerRoutes(
 
       const summarized = []; // We'll collect all newly summarized videos here
       let reusedCached = 0;
+      let skippedNoTranscript = 0;
+      let skippedShortTranscript = 0;
+      let failed = 0;
 
       // Loop through each new video and summarize it
       for (const item of videosData.items) {
@@ -321,7 +331,10 @@ export async function registerRoutes(
             },
           );
 
-          if (!transcriptRes.ok) continue; // Skip this video if no transcript available
+          if (!transcriptRes.ok) {
+            skippedNoTranscript++;
+            continue; // Skip this video if no transcript available
+          }
 
           const transcriptData = await transcriptRes.json();
           let transcriptText = "";
@@ -331,7 +344,10 @@ export async function registerRoutes(
               .join(" ");
           }
 
-          if (!transcriptText || transcriptText.length < 50) continue; // Skip if transcript too short
+          if (!transcriptText || transcriptText.length < 50) {
+            skippedShortTranscript++;
+            continue; // Skip if transcript too short
+          }
 
           // Generate AI summary using Claude (same as existing feature)
           const summaryRes = await anthropic.messages.create({
@@ -362,6 +378,7 @@ export async function registerRoutes(
           summarized.push(savedVideo); // Add to our results list
         } catch (e) {
           console.error(`Failed to process video ${videoId}:`, e);
+          failed++;
           continue; // If one video fails, keep going with the others
         }
       }
@@ -371,9 +388,15 @@ export async function registerRoutes(
 
       // Tell the frontend how many videos were summarized
       res.json({
-        message: `Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and reused ${reusedCached} cached summary/summaries` : ""}`,
+        message:
+          summarized.length > 0 || reusedCached > 0
+            ? `Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and reused ${reusedCached} cached summary/summaries` : ""}`
+            : `Found ${videosData.items.length} recent video(s), but none could be summarized. ${skippedNoTranscript + skippedShortTranscript} had no usable transcript${failed ? ` and ${failed} failed while processing` : ""}.`,
         summarized: summarized.length,
         reusedCached,
+        skippedNoTranscript,
+        skippedShortTranscript,
+        failed,
         videos: summarized,
       });
     } catch (err) {

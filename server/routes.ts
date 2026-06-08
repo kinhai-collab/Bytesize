@@ -19,6 +19,12 @@ const openai = new OpenAI({
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY; // Our new YouTube Data API key
 const NEVER_CHECKED = new Date(0);
+const BROKEN_INITIAL_CHECK_CUTOFF = new Date("2026-06-08T00:00:00.000Z");
+
+type YouTubeChannelInfo = {
+  channelId: string;
+  channelName: string;
+};
 
 function extractYouTubeVideoId(url: string): string {
   try {
@@ -48,6 +54,93 @@ async function getCachedVideoByYouTubeId(videoId: string) {
 function isInitialChannelCheck(channel: { createdAt: Date | null; lastCheckedAt: Date | null }) {
   if (!channel.createdAt || !channel.lastCheckedAt) return true;
   return Math.abs(channel.createdAt.getTime() - channel.lastCheckedAt.getTime()) < 5000;
+}
+
+function extractYouTubeChannelId(channelUrl: string) {
+  try {
+    const urlObj = new URL(channelUrl);
+    const parts = urlObj.pathname.split("/").filter(Boolean);
+    if (parts[0] === "channel" && parts[1]?.startsWith("UC")) {
+      return parts[1];
+    }
+  } catch (e) {}
+
+  return channelUrl.startsWith("UC") ? channelUrl : "";
+}
+
+function extractYouTubeHandle(channelUrl: string) {
+  const trimmed = channelUrl.trim();
+  if (trimmed.startsWith("@")) return trimmed;
+
+  try {
+    const urlObj = new URL(trimmed);
+    const handle = urlObj.pathname
+      .split("/")
+      .filter(Boolean)
+      .find((part) => part.startsWith("@"));
+    return handle || "";
+  } catch (e) {}
+
+  return "";
+}
+
+async function fetchYouTubeChannel(params: URLSearchParams): Promise<YouTubeChannelInfo | null> {
+  const response = await fetch(
+    `https://www.googleapis.com/youtube/v3/channels?${params.toString()}`,
+  );
+  if (!response.ok) return null;
+
+  const data = await response.json();
+  const channel = data.items?.[0];
+  if (!channel?.id || !channel?.snippet?.title) return null;
+
+  return {
+    channelId: channel.id,
+    channelName: channel.snippet.title,
+  };
+}
+
+async function resolveYouTubeChannel(channelUrl: string): Promise<YouTubeChannelInfo | null> {
+  const channelId = extractYouTubeChannelId(channelUrl);
+  if (channelId) {
+    const params = new URLSearchParams({
+      part: "snippet",
+      id: channelId,
+      key: YOUTUBE_API_KEY || "",
+    });
+    const channel = await fetchYouTubeChannel(params);
+    if (channel) return channel;
+  }
+
+  const handle = extractYouTubeHandle(channelUrl);
+  if (handle) {
+    const params = new URLSearchParams({
+      part: "snippet",
+      forHandle: handle,
+      key: YOUTUBE_API_KEY || "",
+    });
+    const channel = await fetchYouTubeChannel(params);
+    if (channel) return channel;
+  }
+
+  const searchRes = await fetch(
+    `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(channelUrl)}&type=channel&key=${YOUTUBE_API_KEY}`,
+  );
+  const searchData = await searchRes.json();
+  const channelInfo = searchData.items?.[0];
+  if (!channelInfo?.id?.channelId || !channelInfo?.snippet?.channelTitle) {
+    return null;
+  }
+
+  return {
+    channelId: channelInfo.id.channelId,
+    channelName: channelInfo.snippet.channelTitle,
+  };
+}
+
+function shouldRecoverInitialBackfill(channel: { createdAt: Date | null }) {
+  if (!channel.createdAt) return false;
+  return channel.createdAt >= BROKEN_INITIAL_CHECK_CUTOFF;
 }
 
 export async function registerRoutes(
@@ -238,15 +331,10 @@ export async function registerRoutes(
       if (!channelUrl)
         return res.status(400).json({ message: "Channel URL is required" });
 
-      // Ask YouTube's API for info about this channel URL
-      // We use the "search" endpoint to find the channel by its URL
-      const searchRes = await fetch(
-        `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(channelUrl)}&type=channel&key=${YOUTUBE_API_KEY}`,
-      );
-      const searchData = await searchRes.json();
+      const channelInfo = await resolveYouTubeChannel(channelUrl);
 
       // If YouTube found nothing, tell the user
-      if (!searchData.items || searchData.items.length === 0) {
+      if (!channelInfo) {
         return res
           .status(404)
           .json({
@@ -254,16 +342,11 @@ export async function registerRoutes(
           });
       }
 
-      // Grab the first result's info
-      const channelInfo = searchData.items[0];
-      const channelId = channelInfo.id.channelId; // YouTube's internal channel ID
-      const channelName = channelInfo.snippet.channelTitle; // The channel's display name
-
       // Save the channel to our database
       const channel = await storage.createChannel({
         channelUrl,
-        channelName,
-        channelId,
+        channelName: channelInfo.channelName,
+        channelId: channelInfo.channelId,
         lastCheckedAt: NEVER_CHECKED, // First update should pull recent videos
       });
 
@@ -280,10 +363,22 @@ export async function registerRoutes(
     try {
       const channelId = Number(req.params.id); // Get the channel ID from the URL
       const channels = await storage.getChannels();
-      const channel = channels.find((c) => c.id === channelId); // Find this specific channel
+      let channel = channels.find((c) => c.id === channelId); // Find this specific channel
 
       if (!channel)
         return res.status(404).json({ message: "Channel not found" });
+
+      const resolvedChannel = await resolveYouTubeChannel(channel.channelUrl);
+      if (
+        resolvedChannel &&
+        (resolvedChannel.channelId !== channel.channelId ||
+          resolvedChannel.channelName !== channel.channelName)
+      ) {
+        channel = await storage.updateChannel(channelId, {
+          channelId: resolvedChannel.channelId,
+          channelName: resolvedChannel.channelName,
+        });
+      }
 
       // Ask YouTube for the most recent videos from this channel
       // "publishedAfter" means only get videos newer than when we last checked
@@ -293,12 +388,23 @@ export async function registerRoutes(
       const videosRes = await fetch(
         `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&publishedAfter=${lastChecked}&maxResults=10&key=${YOUTUBE_API_KEY}`,
       );
-      const videosData = await videosRes.json();
+      let videosData = await videosRes.json();
+      let usedInitialBackfill = false;
 
-      // If no new videos found, tell the user
       if (!videosData.items || videosData.items.length === 0) {
-        await storage.updateChannelLastChecked(channelId); // Still update the timestamp
-        return res.json({ message: "No new videos found", summarized: 0 });
+        if (shouldRecoverInitialBackfill(channel)) {
+          const backfillRes = await fetch(
+            `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&maxResults=10&key=${YOUTUBE_API_KEY}`,
+          );
+          videosData = await backfillRes.json();
+          usedInitialBackfill = Boolean(videosData.items?.length);
+        }
+
+        // If no new videos found, tell the user
+        if (!videosData.items || videosData.items.length === 0) {
+          await storage.updateChannelLastChecked(channelId); // Still update the timestamp
+          return res.json({ message: "No new videos found", summarized: 0 });
+        }
       }
 
       const summarized = []; // We'll collect all newly summarized videos here
@@ -390,7 +496,7 @@ export async function registerRoutes(
       res.json({
         message:
           summarized.length > 0 || reusedCached > 0
-            ? `Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and reused ${reusedCached} cached summary/summaries` : ""}`
+            ? `${usedInitialBackfill ? "Recovered initial channel backfill. " : ""}Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and reused ${reusedCached} cached summary/summaries` : ""}`
             : `Found ${videosData.items.length} recent video(s), but none could be summarized. ${skippedNoTranscript + skippedShortTranscript} had no usable transcript${failed ? ` and ${failed} failed while processing` : ""}.`,
         summarized: summarized.length,
         reusedCached,

@@ -31,6 +31,7 @@ export interface IStorage {
 
   createChannel(channel: InsertChannel): Promise<Channel>; // Save a new channel
   getChannels(): Promise<Channel[]>; // Get all saved channels
+  updateChannel(id: number, channel: Partial<Channel>): Promise<Channel>; // Update channel metadata
   deleteChannel(id: number): Promise<void>; // Stop tracking a channel
   updateChannelLastChecked(id: number): Promise<void>; // Record when we last checked
 }
@@ -89,6 +90,15 @@ export class DatabaseStorage implements IStorage {
   // Gets all saved channels, newest first
   async getChannels(): Promise<Channel[]> {
     return await db.select().from(channels).orderBy(desc(channels.createdAt));
+  }
+
+  async updateChannel(id: number, channel: Partial<Channel>): Promise<Channel> {
+    const [updatedChannel] = await db
+      .update(channels)
+      .set(channel)
+      .where(eq(channels.id, id))
+      .returning();
+    return updatedChannel;
   }
 
   // Deletes a channel so it is no longer tracked

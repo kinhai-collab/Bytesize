@@ -5,10 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import ReactPlayer from "react-player";
-import { Loader2, ArrowLeft, Trash2, Copy, Check } from "lucide-react";
-import { useState } from "react";
+import { Loader2, ArrowLeft, Trash2, Copy, Check, Volume2, Square } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { motion } from "framer-motion";
+import { apiRequest } from "@/lib/queryClient";
 
 export default function VideoDetail() {
   const [, params] = useRoute("/video/:id");
@@ -20,6 +21,55 @@ export default function VideoDetail() {
   const { toast } = useToast();
   
   const [copied, setCopied] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isGeneratingSpeech, setIsGeneratingSpeech] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleSpeak = async () => {
+    if (isSpeaking) {
+      audioRef.current?.pause();
+      setIsSpeaking(false);
+      return;
+    }
+
+    if (!video?.summary) return;
+
+    try {
+      setIsGeneratingSpeech(true);
+      const res = await apiRequest("POST", "/api/tts", { text: video.summary });
+      const { audioUrl } = await res.json();
+
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+
+      audio.onplay = () => setIsSpeaking(true);
+      audio.onended = () => setIsSpeaking(false);
+      audio.onerror = () => {
+        setIsSpeaking(false);
+        toast({ title: "Failed to play audio", variant: "destructive" });
+      };
+
+      await audio.play();
+    } catch (error) {
+      console.error("TTS error:", error);
+      toast({ title: "Failed to generate speech", variant: "destructive" });
+    } finally {
+      setIsGeneratingSpeech(false);
+    }
+  };
 
   const handleDelete = () => {
     if (confirm("Are you sure you want to delete this summary?")) {
@@ -65,10 +115,10 @@ export default function VideoDetail() {
   return (
     <div className="min-h-screen bg-background">
       <Header />
-      
+
       <main className="container mx-auto px-4 py-8">
-        <Button 
-          variant="ghost" 
+        <Button
+          variant="ghost"
           onClick={() => setLocation("/")}
           className="mb-6 pl-0 hover:pl-2 transition-all text-muted-foreground hover:text-foreground"
         >
@@ -79,17 +129,21 @@ export default function VideoDetail() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Column: Video Player & Meta */}
           <div className="lg:col-span-2 space-y-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               className="rounded-2xl overflow-hidden shadow-2xl shadow-black/5 bg-black aspect-video"
             >
-              <ReactPlayer 
-                url={video.url} 
-                width="100%" 
-                height="100%" 
-                controls 
-              />
+              {video?.url && (
+                <div className="w-full h-full">
+                  <ReactPlayer
+                    src={video.url}
+                    width="100%"
+                    height="100%"
+                    controls={true}
+                  />
+                </div>
+              )}
             </motion.div>
 
             <div>
@@ -129,7 +183,23 @@ export default function VideoDetail() {
                       <div className="p-6">
                         {video.summary ? (
                           <div className="prose prose-sm md:prose-base dark:prose-invert max-w-none">
-                            <div className="flex justify-end mb-2">
+                            <div className="flex justify-end gap-2 mb-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 text-xs"
+                                onClick={handleSpeak}
+                                disabled={isGeneratingSpeech}
+                              >
+                                {isGeneratingSpeech ? (
+                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                ) : isSpeaking ? (
+                                  <Square className="w-3 h-3 mr-1" />
+                                ) : (
+                                  <Volume2 className="w-3 h-3 mr-1" />
+                                )}
+                                {isGeneratingSpeech ? "Generating..." : isSpeaking ? "Stop" : "Read Aloud"}
+                              </Button>
                               <Button 
                                 variant="ghost" 
                                 size="sm" 

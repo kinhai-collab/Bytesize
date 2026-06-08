@@ -5,7 +5,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, RefreshCw, PlusCircle, Tv } from "lucide-react";
+import { Loader2, RefreshCw, PlusCircle, Trash2, Tv } from "lucide-react";
 import { motion } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 
@@ -26,6 +26,7 @@ export function ChannelSection() {
 
   // "updatingId" tracks which channel is currently being updated (so we can show a spinner)
   const [updatingId, setUpdatingId] = useState<number | null>(null);
+  const [removingId, setRemovingId] = useState<number | null>(null);
 
   // "toast" lets us show little popup notification messages
   const { toast } = useToast();
@@ -77,6 +78,34 @@ export function ChannelSection() {
     },
   });
 
+  const removeChannelMutation = useMutation({
+    mutationFn: async (channelId: number) => {
+      const res = await fetch(`/api/channels/${channelId}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.message || "Failed to remove channel");
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["channels"] });
+      toast({
+        title: "Channel removed",
+        description: "This channel will no longer be tracked.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Couldn't remove channel",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+    onSettled: () => setRemovingId(null),
+  });
+
   // This handles clicking "Update" on a specific channel
   const handleUpdate = async (channel: Channel) => {
     setUpdatingId(channel.id); // Show spinner on this channel's button
@@ -87,7 +116,7 @@ export function ChannelSection() {
       const data = await res.json();
 
       // Refresh the video list so new summaries appear immediately
-      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/videos"] });
       queryClient.invalidateQueries({ queryKey: ["channels"] });
 
       // Show a message telling the user how many new videos were found
@@ -114,6 +143,17 @@ export function ChannelSection() {
     const trimmed = inputUrl.trim(); // Remove any accidental spaces
     if (!trimmed) return; // Do nothing if input is empty
     addChannelMutation.mutate(trimmed); // Trigger the add channel action
+  };
+
+  const handleRemoveChannel = (channel: Channel) => {
+    if (
+      confirm(
+        `Remove ${channel.channelName}? New videos from this channel will no longer be tracked.`,
+      )
+    ) {
+      setRemovingId(channel.id);
+      removeChannelMutation.mutate(channel.id);
+    }
   };
 
   return (
@@ -186,19 +226,39 @@ export function ChannelSection() {
               </div>
 
               {/* Update button — shows spinner while updating */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleUpdate(channel)}
-                disabled={updatingId === channel.id} // Disable while this channel is updating
-              >
-                {updatingId === channel.id ? (
-                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                ) : (
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                )}
-                Update
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleUpdate(channel)}
+                  disabled={
+                    updatingId === channel.id || removingId === channel.id
+                  }
+                >
+                  {updatingId === channel.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                  )}
+                  Update
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-destructive hover:bg-destructive/10"
+                  onClick={() => handleRemoveChannel(channel)}
+                  disabled={
+                    removingId === channel.id || updatingId === channel.id
+                  }
+                  aria-label={`Remove ${channel.channelName}`}
+                >
+                  {removingId === channel.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
+                </Button>
+              </div>
             </motion.div>
           ))}
         </div>

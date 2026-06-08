@@ -19,6 +19,31 @@ const openai = new OpenAI({
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY; // Our new YouTube Data API key
 
+function extractYouTubeVideoId(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.hostname.includes("youtube.com")) {
+      if (urlObj.pathname.startsWith("/shorts/")) {
+        return urlObj.pathname.split("/")[2] || "";
+      }
+      return urlObj.searchParams.get("v") || "";
+    }
+    if (urlObj.hostname.includes("youtu.be")) {
+      return urlObj.pathname.split("/").filter(Boolean)[0] || "";
+    }
+  } catch (e) {}
+
+  return "";
+}
+
+async function getCachedVideoByYouTubeId(videoId: string) {
+  const videos = await storage.getVideos();
+  return videos.find((video) => {
+    const cachedVideoId = extractYouTubeVideoId(video.url);
+    return cachedVideoId === videoId && Boolean(video.summary);
+  });
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express,
@@ -98,19 +123,15 @@ export async function registerRoutes(
   app.post(api.videos.create.path, async (req, res) => {
     try {
       const { url } = api.videos.create.input.parse(req.body);
-      let videoId = "";
-      try {
-        const urlObj = new URL(url);
-        if (urlObj.hostname.includes("youtube.com")) {
-          videoId = urlObj.searchParams.get("v") || "";
-        } else if (urlObj.hostname.includes("youtu.be")) {
-          videoId = urlObj.pathname.slice(1);
-        }
-      } catch (e) {
+      const videoId = extractYouTubeVideoId(url);
+      if (!videoId) {
         return res.status(400).json({ message: "Invalid YouTube URL" });
       }
-      if (!videoId)
-        return res.status(400).json({ message: "Could not extract video ID" });
+
+      const cachedVideo = await getCachedVideoByYouTubeId(videoId);
+      if (cachedVideo) {
+        return res.status(200).json(cachedVideo);
+      }
 
       let title = `Video ${videoId}`;
       try {
@@ -274,6 +295,7 @@ export async function registerRoutes(
       }
 
       const summarized = []; // We'll collect all newly summarized videos here
+      let reusedCached = 0;
 
       // Loop through each new video and summarize it
       for (const item of videosData.items) {
@@ -282,6 +304,12 @@ export async function registerRoutes(
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`; // Full URL
 
         try {
+          const cachedVideo = await getCachedVideoByYouTubeId(videoId);
+          if (cachedVideo) {
+            reusedCached++;
+            continue;
+          }
+
           // Fetch the transcript for this video (same as existing summarize feature)
           const transcriptRes = await fetch(
             `https://youtube-transcripts.p.rapidapi.com/youtube/transcript?url=${encodeURIComponent(videoUrl)}`,
@@ -343,13 +371,26 @@ export async function registerRoutes(
 
       // Tell the frontend how many videos were summarized
       res.json({
-        message: `Successfully summarized ${summarized.length} new video(s)`,
+        message: `Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and reused ${reusedCached} cached summary/summaries` : ""}`,
         summarized: summarized.length,
+        reusedCached,
         videos: summarized,
       });
     } catch (err) {
       console.error("Update channel error:", err);
       res.status(500).json({ message: "Failed to update channel" });
+    }
+  });
+
+  // DELETE /api/channels/:id — stops tracking a followed channel
+  app.delete("/api/channels/:id", async (req, res) => {
+    try {
+      const channelId = Number(req.params.id);
+      await storage.deleteChannel(channelId);
+      res.status(204).send();
+    } catch (err) {
+      console.error("Delete channel error:", err);
+      res.status(500).json({ message: "Failed to remove channel" });
     }
   });
 

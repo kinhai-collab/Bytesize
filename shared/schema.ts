@@ -8,6 +8,9 @@ export const videos = pgTable("videos", {
   url: text("url").notNull(),
   title: text("title").notNull(),
   thumbnailUrl: text("thumbnail_url"),
+  sourceChannelId: text("source_channel_id"),
+  sourceChannelName: text("source_channel_name"),
+  duration: text("duration"),
   transcript: text("transcript"), // Full transcript
   summary: text("summary"), // AI Summary
   processed: boolean("processed").default(false),
@@ -29,6 +32,7 @@ export const channels = pgTable("channels", {
   channelUrl: text("channel_url").notNull(), // URL the user pasted
   channelName: text("channel_name").notNull(), // Display name from YouTube
   channelId: text("channel_id").notNull(), // YouTube's internal channel ID
+  channelThumbnailUrl: text("channel_thumbnail_url"), // Channel avatar from YouTube
   lastCheckedAt: timestamp("last_checked_at").defaultNow(), // When we last checked for new videos
   createdAt: timestamp("created_at").defaultNow(),
 });

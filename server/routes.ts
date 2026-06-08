@@ -24,6 +24,7 @@ const BROKEN_INITIAL_CHECK_CUTOFF = new Date("2026-06-08T00:00:00.000Z");
 type YouTubeChannelInfo = {
   channelId: string;
   channelName: string;
+  channelThumbnailUrl: string | null;
 };
 
 function extractYouTubeVideoId(url: string): string {
@@ -49,6 +50,43 @@ async function getCachedVideoByYouTubeId(videoId: string) {
     const cachedVideoId = extractYouTubeVideoId(video.url);
     return cachedVideoId === videoId && Boolean(video.summary);
   });
+}
+
+function formatYouTubeDuration(duration: string | undefined) {
+  if (!duration) return null;
+
+  const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return null;
+
+  const hours = Number(match[1] || 0);
+  const minutes = Number(match[2] || 0);
+  const seconds = Number(match[3] || 0);
+  const paddedSeconds = seconds.toString().padStart(2, "0");
+
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${paddedSeconds}`;
+  }
+
+  return `${minutes}:${paddedSeconds}`;
+}
+
+async function fetchVideoDetails(videoId: string) {
+  if (!YOUTUBE_API_KEY) return null;
+
+  const response = await fetch(
+    `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=${videoId}&key=${YOUTUBE_API_KEY}`,
+  );
+  if (!response.ok) return null;
+
+  const data = await response.json();
+  const video = data.items?.[0];
+  if (!video) return null;
+
+  return {
+    sourceChannelId: video.snippet?.channelId || null,
+    sourceChannelName: video.snippet?.channelTitle || null,
+    duration: formatYouTubeDuration(video.contentDetails?.duration),
+  };
 }
 
 function isInitialChannelCheck(channel: { createdAt: Date | null; lastCheckedAt: Date | null }) {
@@ -97,6 +135,10 @@ async function fetchYouTubeChannel(params: URLSearchParams): Promise<YouTubeChan
   return {
     channelId: channel.id,
     channelName: channel.snippet.title,
+    channelThumbnailUrl:
+      channel.snippet.thumbnails?.medium?.url ||
+      channel.snippet.thumbnails?.default?.url ||
+      null,
   };
 }
 
@@ -135,6 +177,10 @@ async function resolveYouTubeChannel(channelUrl: string): Promise<YouTubeChannel
   return {
     channelId: channelInfo.id.channelId,
     channelName: channelInfo.snippet.channelTitle,
+    channelThumbnailUrl:
+      channelInfo.snippet.thumbnails?.medium?.url ||
+      channelInfo.snippet.thumbnails?.default?.url ||
+      null,
   };
 }
 
@@ -233,11 +279,14 @@ export async function registerRoutes(
       }
 
       let title = `Video ${videoId}`;
+      let sourceChannelName: string | null = null;
       try {
         const oembedRes = await fetch(`https://noembed.com/embed?url=${url}`);
         const oembedData = await oembedRes.json();
         if (oembedData.title) title = oembedData.title;
+        if (oembedData.author_name) sourceChannelName = oembedData.author_name;
       } catch (e) {}
+      const videoDetails = await fetchVideoDetails(videoId);
 
       let transcriptText = "";
       try {
@@ -295,6 +344,9 @@ export async function registerRoutes(
         url,
         title,
         thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+        sourceChannelId: videoDetails?.sourceChannelId || null,
+        sourceChannelName: videoDetails?.sourceChannelName || sourceChannelName,
+        duration: videoDetails?.duration || null,
         transcript: transcriptText,
         summary,
       });
@@ -347,6 +399,7 @@ export async function registerRoutes(
         channelUrl,
         channelName: channelInfo.channelName,
         channelId: channelInfo.channelId,
+        channelThumbnailUrl: channelInfo.channelThumbnailUrl,
         lastCheckedAt: NEVER_CHECKED, // First update should pull recent videos
       });
 
@@ -372,11 +425,13 @@ export async function registerRoutes(
       if (
         resolvedChannel &&
         (resolvedChannel.channelId !== channel.channelId ||
-          resolvedChannel.channelName !== channel.channelName)
+          resolvedChannel.channelName !== channel.channelName ||
+          resolvedChannel.channelThumbnailUrl !== channel.channelThumbnailUrl)
       ) {
         channel = await storage.updateChannel(channelId, {
           channelId: resolvedChannel.channelId,
           channelName: resolvedChannel.channelName,
+          channelThumbnailUrl: resolvedChannel.channelThumbnailUrl,
         });
       }
 
@@ -425,6 +480,7 @@ export async function registerRoutes(
             reusedCached++;
             continue;
           }
+          const videoDetails = await fetchVideoDetails(videoId);
 
           // Fetch the transcript for this video (same as existing summarize feature)
           const transcriptRes = await fetch(
@@ -477,6 +533,9 @@ export async function registerRoutes(
             url: videoUrl,
             title: videoTitle,
             thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+            sourceChannelId: videoDetails?.sourceChannelId || channel.channelId,
+            sourceChannelName: videoDetails?.sourceChannelName || channel.channelName,
+            duration: videoDetails?.duration || null,
             transcript: transcriptText,
             summary,
           });

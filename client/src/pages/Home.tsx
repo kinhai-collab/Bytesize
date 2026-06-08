@@ -1,25 +1,34 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
+  Check,
   CheckCircle2,
+  Copy,
   Grid3X3,
   Loader2,
+  Minimize2,
   PanelRightClose,
   PanelRightOpen,
   Plus,
   RefreshCw,
   Sparkles,
+  Square,
   Trash2,
+  Volume2,
   Youtube,
 } from "lucide-react";
+import ReactPlayer from "react-player";
 import { type Video } from "@shared/schema";
 import { api } from "@shared/routes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { useCreateVideo, useVideos } from "@/hooks/use-videos";
+import { apiRequest } from "@/lib/queryClient";
+import { useCreateVideo, useDeleteVideo, useVideos } from "@/hooks/use-videos";
 
 type Channel = {
   id: number;
@@ -40,9 +49,11 @@ export default function Home() {
   const [updatingId, setUpdatingId] = useState<number | null>(null);
   const [updatingAll, setUpdatingAll] = useState(false);
   const [removingId, setRemovingId] = useState<number | null>(null);
+  const [expandedVideoId, setExpandedVideoId] = useState<number | null>(null);
 
   const { data: videos = [], isLoading: videosLoading } = useVideos();
   const { mutate: createVideo, isPending: isCreatingVideo } = useCreateVideo();
+  const { mutate: deleteVideo } = useDeleteVideo();
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -214,6 +225,18 @@ export default function Home() {
     removeChannelMutation.mutate(channel.id);
   };
 
+  const handleDeleteVideo = (videoId: number) => {
+    if (!confirm("Delete this summary?")) return;
+
+    deleteVideo(videoId, {
+      onSuccess: () => {
+        if (expandedVideoId === videoId) {
+          setExpandedVideoId(null);
+        }
+      },
+    });
+  };
+
   return (
     <div className="min-h-screen bg-[#F6F6F8] text-foreground">
       <TopNav
@@ -244,7 +267,16 @@ export default function Home() {
             ) : filteredVideos.length === 0 ? (
               <EmptyState />
             ) : (
-              filteredVideos.map((video) => <SummaryCard key={video.id} video={video} />)
+              filteredVideos.map((video) => (
+                <SummaryCard
+                  key={video.id}
+                  video={video}
+                  isExpanded={expandedVideoId === video.id}
+                  onDelete={() => handleDeleteVideo(video.id)}
+                  onMinimize={() => setExpandedVideoId(null)}
+                  onToggle={() => setExpandedVideoId((current) => (current === video.id ? null : video.id))}
+                />
+              ))
             )}
           </div>
         </section>
@@ -396,10 +428,22 @@ function ChannelFilterRow({
   );
 }
 
-function SummaryCard({ video }: { video: Video }) {
+function SummaryCard({
+  video,
+  isExpanded,
+  onDelete,
+  onMinimize,
+  onToggle,
+}: {
+  video: Video;
+  isExpanded: boolean;
+  onDelete: () => void;
+  onMinimize: () => void;
+  onToggle: () => void;
+}) {
   return (
-    <Link href={`/video/${video.id}`} className="group block">
-      <article className="relative flex gap-4 rounded-lg border border-[#E3E3EA] bg-white p-3 transition-colors hover:border-[#7F77DD]">
+    <article className={`overflow-hidden rounded-lg border bg-white transition-colors ${isExpanded ? "border-[#7F77DD]" : "border-[#E3E3EA] hover:border-[#7F77DD]"}`}>
+      <button type="button" className="group relative flex w-full gap-4 p-3 text-left" onClick={onToggle}>
         <div className="relative h-[70px] w-[110px] shrink-0 overflow-hidden rounded-md bg-[#ECECF2]">
           {video.thumbnailUrl ? (
             <img src={video.thumbnailUrl} alt={video.title} className="h-full w-full object-cover" />
@@ -429,8 +473,217 @@ function SummaryCard({ video }: { video: Video }) {
           <CheckCircle2 className="h-3 w-3" />
           Ready
         </span>
-      </article>
-    </Link>
+      </button>
+
+      {isExpanded && (
+        <InlineVideoFrame video={video} onDelete={onDelete} onMinimize={onMinimize} />
+      )}
+    </article>
+  );
+}
+
+function InlineVideoFrame({
+  video,
+  onDelete,
+  onMinimize,
+}: {
+  video: Video;
+  onDelete: () => void;
+  onMinimize: () => void;
+}) {
+  const { toast } = useToast();
+  const [copiedSection, setCopiedSection] = useState<"summary" | "transcript" | null>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isGeneratingSpeech, setIsGeneratingSpeech] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  const copyToClipboard = (text: string, section: "summary" | "transcript") => {
+    navigator.clipboard.writeText(text);
+    setCopiedSection(section);
+    toast({ title: "Copied to clipboard" });
+    setTimeout(() => setCopiedSection(null), 2000);
+  };
+
+  const handleSpeak = async () => {
+    if (isSpeaking) {
+      audioRef.current?.pause();
+      setIsSpeaking(false);
+      return;
+    }
+
+    if (!video.summary) return;
+
+    try {
+      setIsGeneratingSpeech(true);
+      const res = await apiRequest("POST", "/api/tts", { text: video.summary });
+      const { audioUrl } = await res.json();
+
+      audioRef.current?.pause();
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+      audio.onplay = () => setIsSpeaking(true);
+      audio.onended = () => setIsSpeaking(false);
+      audio.onerror = () => {
+        setIsSpeaking(false);
+        toast({ title: "Failed to play audio", variant: "destructive" });
+      };
+
+      await audio.play();
+    } catch (error) {
+      console.error("TTS error:", error);
+      toast({ title: "Failed to generate speech", variant: "destructive" });
+    } finally {
+      setIsGeneratingSpeech(false);
+    }
+  };
+
+  return (
+    <div className="border-t border-[#E3E3EA] bg-white p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-foreground">{video.sourceChannelName || "YouTube"}</p>
+          <p className="text-xs text-muted-foreground">
+            Processed {video.createdAt ? new Date(video.createdAt).toLocaleDateString() : "recently"}
+          </p>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 rounded-lg border-[#DCDCE6] text-xs"
+            onClick={onMinimize}
+          >
+            <Minimize2 className="mr-1.5 h-3.5 w-3.5" />
+            Minimize
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            onClick={onDelete}
+            aria-label="Delete summary"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+        <div className="overflow-hidden rounded-lg bg-black">
+          {video.url ? (
+            <div className="aspect-video">
+              <ReactPlayer src={video.url} width="100%" height="100%" controls />
+            </div>
+          ) : (
+            <div className="flex aspect-video items-center justify-center text-sm text-white/70">
+              Video URL unavailable
+            </div>
+          )}
+        </div>
+
+        <Tabs defaultValue="summary" className="flex min-h-[360px] flex-col overflow-hidden rounded-lg border border-[#E3E3EA]">
+          <div className="border-b border-[#E3E3EA] bg-[#F6F6F8] p-2">
+            <TabsList className="grid w-full grid-cols-2 rounded-lg bg-white">
+              <TabsTrigger value="summary">Summary</TabsTrigger>
+              <TabsTrigger value="transcript">Transcript</TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="summary" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-[320px]">
+              <div className="p-4">
+                {video.summary ? (
+                  <>
+                    <div className="mb-3 flex justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={handleSpeak}
+                        disabled={isGeneratingSpeech}
+                      >
+                        {isGeneratingSpeech ? (
+                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                        ) : isSpeaking ? (
+                          <Square className="mr-1 h-3 w-3" />
+                        ) : (
+                          <Volume2 className="mr-1 h-3 w-3" />
+                        )}
+                        {isGeneratingSpeech ? "Generating..." : isSpeaking ? "Stop" : "Read aloud"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={() => copyToClipboard(video.summary || "", "summary")}
+                      >
+                        {copiedSection === "summary" ? <Check className="mr-1 h-3 w-3" /> : <Copy className="mr-1 h-3 w-3" />}
+                        {copiedSection === "summary" ? "Copied" : "Copy"}
+                      </Button>
+                    </div>
+                    <div className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+                      {video.summary}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex h-64 flex-col items-center justify-center text-center">
+                    <Loader2 className="mb-4 h-8 w-8 animate-spin text-[#7F77DD]" />
+                    <h3 className="font-semibold">Generating Summary</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      This usually takes about a minute.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+          </TabsContent>
+
+          <TabsContent value="transcript" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-[320px]">
+              <div className="p-4">
+                {video.transcript ? (
+                  <>
+                    <div className="mb-3 flex justify-end">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={() => copyToClipboard(video.transcript || "", "transcript")}
+                      >
+                        {copiedSection === "transcript" ? <Check className="mr-1 h-3 w-3" /> : <Copy className="mr-1 h-3 w-3" />}
+                        {copiedSection === "transcript" ? "Copied" : "Copy"}
+                      </Button>
+                    </div>
+                    <p className="whitespace-pre-wrap font-mono text-xs leading-6 text-muted-foreground">
+                      {video.transcript}
+                    </p>
+                  </>
+                ) : (
+                  <div className="flex h-64 items-center justify-center text-center">
+                    <p className="text-sm text-muted-foreground">Transcript not available yet.</p>
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
   );
 }
 

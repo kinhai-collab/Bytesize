@@ -27,6 +27,17 @@ function serializeUser(user: User) {
 
 export async function ensureAuthSchema() {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS "session" (
+      "sid" varchar NOT NULL COLLATE "default",
+      "sess" json NOT NULL,
+      "expire" timestamp(6) NOT NULL,
+      CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
+    );
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");`);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id serial PRIMARY KEY,
       email text NOT NULL UNIQUE,
@@ -312,7 +323,10 @@ export function registerAuthRoutes(app: Express) {
     });
 
     req.session.save((error) => {
-      if (error) return res.status(500).json({ message: "Could not start Google sign-in" });
+      if (error) {
+        console.error("Could not save Google OAuth session:", error);
+        return res.status(500).json({ message: "Could not start Google sign-in" });
+      }
       res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
     });
   });
@@ -350,7 +364,10 @@ export function registerAuthRoutes(app: Express) {
     });
 
     req.session.save((error) => {
-      if (error) return res.status(500).json({ message: "Could not start Apple ID sign-in" });
+      if (error) {
+        console.error("Could not save Apple OAuth session:", error);
+        return res.status(500).json({ message: "Could not start Apple ID sign-in" });
+      }
       res.redirect(`https://appleid.apple.com/auth/authorize?${params.toString()}`);
     });
   });

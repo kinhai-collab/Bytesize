@@ -59,7 +59,7 @@ export function configureAuth(app: Express) {
       saveUninitialized: false,
       cookie: {
         httpOnly: true,
-        sameSite: "lax",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         secure: process.env.NODE_ENV === "production",
         maxAge: 1000 * 60 * 60 * 24 * 30,
       },
@@ -96,12 +96,22 @@ async function claimLegacyDataIfFirstUser(userId: number) {
 }
 
 function getBaseUrl(req: Request) {
-  const configured = process.env.PUBLIC_APP_URL || process.env.REPLIT_DOMAINS?.split(",")[0];
+  const configured = process.env.PUBLIC_APP_URL;
   if (configured) {
-    return configured.startsWith("http") ? configured : `https://${configured}`;
+    const baseUrl = configured.startsWith("http") ? configured : `https://${configured}`;
+    return baseUrl.replace(/\/$/, "");
   }
 
-  return `${req.protocol}://${req.get("host")}`;
+  const forwardedProto = String(req.get("x-forwarded-proto") || "").split(",")[0].trim();
+  const forwardedHost = String(req.get("x-forwarded-host") || "").split(",")[0].trim();
+  const protocol = forwardedProto || req.protocol;
+  const host = forwardedHost || req.get("host") || process.env.REPLIT_DOMAINS?.split(",")[0];
+
+  if (!host) {
+    throw new Error("Could not determine the app URL for sign-in");
+  }
+
+  return `${protocol}://${host}`.replace(/\/$/, "");
 }
 
 function makeOAuthState(req: Request, provider: string) {
@@ -163,7 +173,9 @@ async function exchangeGoogleCode(code: string, redirectUri: string) {
   });
 
   if (!tokenResponse.ok) {
-    throw new Error("Google sign-in failed");
+    const errorText = await tokenResponse.text().catch(() => "");
+    console.error("Google token exchange failed:", tokenResponse.status, errorText);
+    throw new Error("Google sign-in failed. Check the Google OAuth callback URL.");
   }
 
   const tokenJson = (await tokenResponse.json()) as { access_token?: string };
@@ -174,6 +186,8 @@ async function exchangeGoogleCode(code: string, redirectUri: string) {
   });
 
   if (!profileResponse.ok) {
+    const errorText = await profileResponse.text().catch(() => "");
+    console.error("Google profile lookup failed:", profileResponse.status, errorText);
     throw new Error("Could not read your Google profile");
   }
 
@@ -254,7 +268,9 @@ async function exchangeAppleCode(code: string, redirectUri: string) {
   });
 
   if (!tokenResponse.ok) {
-    throw new Error("Apple ID sign-in failed");
+    const errorText = await tokenResponse.text().catch(() => "");
+    console.error("Apple token exchange failed:", tokenResponse.status, errorText);
+    throw new Error("Apple ID sign-in failed. Check the Apple Service ID and callback URL.");
   }
 
   const tokenJson = (await tokenResponse.json()) as { id_token?: string };
@@ -295,7 +311,10 @@ export function registerAuthRoutes(app: Express) {
       state: makeOAuthState(req, "google"),
     });
 
-    res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+    req.session.save((error) => {
+      if (error) return res.status(500).json({ message: "Could not start Google sign-in" });
+      res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+    });
   });
 
   app.get("/api/auth/google/callback", async (req, res) => {
@@ -330,7 +349,10 @@ export function registerAuthRoutes(app: Express) {
       state: makeOAuthState(req, "apple"),
     });
 
-    res.redirect(`https://appleid.apple.com/auth/authorize?${params.toString()}`);
+    req.session.save((error) => {
+      if (error) return res.status(500).json({ message: "Could not start Apple ID sign-in" });
+      res.redirect(`https://appleid.apple.com/auth/authorize?${params.toString()}`);
+    });
   });
 
   app.post("/api/auth/apple/callback", async (req, res) => {

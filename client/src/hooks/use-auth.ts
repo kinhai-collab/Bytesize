@@ -7,6 +7,11 @@ export type AuthUser = {
   provider: string;
 };
 
+export type AuthOptions = {
+  google: boolean;
+  apple: boolean;
+};
+
 export function useAuth() {
   return useQuery({
     queryKey: ["auth", "me"],
@@ -14,6 +19,17 @@ export function useAuth() {
       const res = await fetch("/api/auth/me", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load profile");
       return (await res.json()) as { user: AuthUser | null };
+    },
+  });
+}
+
+export function useAuthOptions() {
+  return useQuery({
+    queryKey: ["auth", "options"],
+    queryFn: async () => {
+      const res = await fetch("/api/auth/options", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load sign-in options");
+      return (await res.json()) as AuthOptions;
     },
   });
 }

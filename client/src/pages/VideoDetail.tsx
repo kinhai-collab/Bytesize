@@ -21,12 +21,12 @@ export default function VideoDetail() {
   const { toast } = useToast();
   
   const [copied, setCopied] = useState(false);
-  const { isSpeaking, speak, stop } = useSpeech({
+  const { isPreparing, isSpeaking, speak, stop } = useSpeech({
     onError: (message) => toast({ title: message, variant: "destructive" }),
   });
 
   const handleSpeak = () => {
-    if (isSpeaking) {
+    if (isPreparing || isSpeaking) {
       stop();
       return;
     }
@@ -154,12 +154,14 @@ export default function VideoDetail() {
                                 className="h-8 text-xs"
                                 onClick={handleSpeak}
                               >
-                                {isSpeaking ? (
+                                {isPreparing ? (
+                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                ) : isSpeaking ? (
                                   <Square className="w-3 h-3 mr-1" />
                                 ) : (
                                   <Volume2 className="w-3 h-3 mr-1" />
                                 )}
-                                {isSpeaking ? "Stop" : "Read Aloud"}
+                                {isPreparing ? "Preparing..." : isSpeaking ? "Stop" : "Read Aloud"}
                               </Button>
                               <Button 
                                 variant="ghost" 

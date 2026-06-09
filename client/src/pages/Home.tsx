@@ -493,7 +493,7 @@ function InlineVideoFrame({
 }) {
   const { toast } = useToast();
   const [copiedSection, setCopiedSection] = useState<"summary" | "transcript" | null>(null);
-  const { isSpeaking, speak, stop } = useSpeech({
+  const { isPreparing, isSpeaking, speak, stop } = useSpeech({
     onError: (message) => toast({ title: message, variant: "destructive" }),
   });
 
@@ -505,7 +505,7 @@ function InlineVideoFrame({
   };
 
   const handleSpeak = () => {
-    if (isSpeaking) {
+    if (isPreparing || isSpeaking) {
       stop();
       return;
     }
@@ -582,12 +582,14 @@ function InlineVideoFrame({
                         className="h-8 text-xs"
                         onClick={handleSpeak}
                       >
-                        {isSpeaking ? (
+                        {isPreparing ? (
+                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                        ) : isSpeaking ? (
                           <Square className="mr-1 h-3 w-3" />
                         ) : (
                           <Volume2 className="mr-1 h-3 w-3" />
                         )}
-                        {isSpeaking ? "Stop" : "Read aloud"}
+                        {isPreparing ? "Preparing..." : isSpeaking ? "Stop" : "Read aloud"}
                       </Button>
                       <Button
                         type="button"

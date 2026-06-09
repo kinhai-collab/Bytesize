@@ -8,6 +8,7 @@ import {
   Copy,
   Grid3X3,
   Loader2,
+  LogOut,
   Minimize2,
   PanelRightClose,
   PanelRightOpen,
@@ -16,6 +17,7 @@ import {
   Sparkles,
   Square,
   Trash2,
+  UserCircle2,
   Volume2,
   Youtube,
 } from "lucide-react";
@@ -28,6 +30,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSpeech } from "@/hooks/use-speech";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth, useLogout } from "@/hooks/use-auth";
 import { useCreateVideo, useDeleteVideo, useVideos } from "@/hooks/use-videos";
 
 type Channel = {
@@ -54,13 +57,15 @@ export default function Home() {
   const { data: videos = [], isLoading: videosLoading } = useVideos();
   const { mutate: createVideo, isPending: isCreatingVideo } = useCreateVideo();
   const { mutate: deleteVideo } = useDeleteVideo();
+  const { data: auth } = useAuth();
+  const logout = useLogout();
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   const { data: channels = [], isLoading: channelsLoading } = useQuery<Channel[]>({
     queryKey: ["channels"],
     queryFn: async () => {
-      const res = await fetch("/api/channels");
+      const res = await fetch("/api/channels", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load channels");
       return res.json();
     },
@@ -70,6 +75,7 @@ export default function Home() {
     mutationFn: async (channelUrl: string) => {
       const res = await fetch("/api/channels", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channelUrl }),
       });
@@ -99,7 +105,7 @@ export default function Home() {
 
   const removeChannelMutation = useMutation({
     mutationFn: async (channelId: number) => {
-      const res = await fetch(`/api/channels/${channelId}`, { method: "DELETE" });
+      const res = await fetch(`/api/channels/${channelId}`, { method: "DELETE", credentials: "include" });
       if (!res.ok) {
         const err = await res.json().catch(() => null);
         throw new Error(err?.message || "Failed to remove channel");
@@ -169,6 +175,7 @@ export default function Home() {
     try {
       const res = await fetch(`/api/channels/${channel.id}/update`, {
         method: "POST",
+        credentials: "include",
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.message || "Failed to update channel");
@@ -195,6 +202,7 @@ export default function Home() {
     try {
       const res = await fetch("/api/channels/update-all", {
         method: "POST",
+        credentials: "include",
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.message || "Failed to update channels");
@@ -246,6 +254,10 @@ export default function Home() {
         onInputChange={setSummaryInput}
         onSubmit={handleSummarize}
         onTogglePanel={() => setRightPanelOpen((value) => !value)}
+        userEmail={auth?.user?.email || ""}
+        userName={auth?.user?.displayName || null}
+        logoutPending={logout.isPending}
+        onLogout={() => logout.mutate()}
       />
 
       <main
@@ -314,6 +326,10 @@ function TopNav({
   onInputChange,
   onSubmit,
   onTogglePanel,
+  userEmail,
+  userName,
+  logoutPending,
+  onLogout,
 }: {
   inputValue: string;
   isCreating: boolean;
@@ -321,6 +337,10 @@ function TopNav({
   onInputChange: (value: string) => void;
   onSubmit: (event: React.FormEvent) => void;
   onTogglePanel: () => void;
+  userEmail: string;
+  userName: string | null;
+  logoutPending: boolean;
+  onLogout: () => void;
 }) {
   return (
     <header className="sticky top-0 z-40 w-full border-b border-[#E3E3EA] bg-white">
@@ -353,6 +373,26 @@ function TopNav({
         >
           {isCreating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
           <span className="hidden sm:inline">Summarize</span>
+        </Button>
+
+        <div className="hidden min-w-0 items-center gap-2 rounded-lg border border-[#E3E3EA] px-3 py-2 md:flex">
+          <UserCircle2 className="h-4 w-4 shrink-0 text-[#7F77DD]" />
+          <div className="min-w-0">
+            <p className="truncate text-xs font-semibold leading-none">{userName || userEmail}</p>
+            {userName && <p className="mt-1 truncate text-[11px] leading-none text-muted-foreground">{userEmail}</p>}
+          </div>
+        </div>
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Sign out"
+          className="h-10 w-10 shrink-0 rounded-lg text-muted-foreground hover:bg-[#F1F0FF] hover:text-[#7F77DD]"
+          onClick={onLogout}
+          disabled={logoutPending}
+        >
+          {logoutPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-5 w-5" />}
         </Button>
 
         <Button

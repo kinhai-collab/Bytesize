@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { registerAudioRoutes } from "./replit_integrations/audio";
 import { storage } from "./storage";
+import { currentUser, registerAuthRoutes, requireUser } from "./auth";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import Anthropic from "@anthropic-ai/sdk";
@@ -44,8 +45,8 @@ function extractYouTubeVideoId(url: string): string {
   return "";
 }
 
-async function getCachedVideoByYouTubeId(videoId: string) {
-  const videos = await storage.getVideos();
+async function getCachedVideoByYouTubeId(videoId: string, userId: number) {
+  const videos = await storage.getVideos(userId);
   return videos.find((video) => {
     const cachedVideoId = extractYouTubeVideoId(video.url);
     return cachedVideoId === videoId && Boolean(video.summary);
@@ -189,8 +190,8 @@ function shouldRecoverInitialBackfill(channel: { createdAt: Date | null }) {
   return channel.createdAt >= BROKEN_INITIAL_CHECK_CUTOFF;
 }
 
-async function updateFollowedChannel(channelId: number) {
-  const channels = await storage.getChannels();
+async function updateFollowedChannel(channelId: number, userId: number) {
+  const channels = await storage.getChannels(userId);
   let channel = channels.find((c) => c.id === channelId);
 
   if (!channel) {
@@ -210,7 +211,7 @@ async function updateFollowedChannel(channelId: number) {
       channelId: resolvedChannel.channelId,
       channelName: resolvedChannel.channelName,
       channelThumbnailUrl: resolvedChannel.channelThumbnailUrl,
-    });
+    }, userId);
   }
 
   const lastChecked = isInitialChannelCheck(channel)
@@ -232,7 +233,7 @@ async function updateFollowedChannel(channelId: number) {
     }
 
     if (!videosData.items || videosData.items.length === 0) {
-      await storage.updateChannelLastChecked(channelId);
+      await storage.updateChannelLastChecked(channelId, userId);
       return {
         channelId,
         channelName: channel.channelName,
@@ -265,7 +266,7 @@ async function updateFollowedChannel(channelId: number) {
       const sourceChannelId = videoDetails?.sourceChannelId || channel.channelId;
       const sourceChannelName = videoDetails?.sourceChannelName || channel.channelName;
       const duration = videoDetails?.duration || null;
-      const cachedVideo = await getCachedVideoByYouTubeId(videoId);
+      const cachedVideo = await getCachedVideoByYouTubeId(videoId, userId);
 
       if (cachedVideo) {
         reusedCached++;
@@ -278,7 +279,7 @@ async function updateFollowedChannel(channelId: number) {
             sourceChannelId,
             sourceChannelName,
             duration,
-          });
+          }, userId);
           updatedCachedMetadata++;
         }
         continue;
@@ -337,7 +338,7 @@ async function updateFollowedChannel(channelId: number) {
         duration,
         transcript: transcriptText,
         summary,
-      });
+      }, userId);
 
       summarized.push(savedVideo);
     } catch (e) {
@@ -346,7 +347,7 @@ async function updateFollowedChannel(channelId: number) {
     }
   }
 
-  await storage.updateChannelLastChecked(channelId);
+  await storage.updateChannelLastChecked(channelId, userId);
 
   return {
     channelId,
@@ -369,6 +370,8 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
+  registerAuthRoutes(app);
+  app.use("/api", requireUser);
   registerAudioRoutes(app);
 
   app.post("/api/tts", async (req, res) => {
@@ -402,12 +405,14 @@ export async function registerRoutes(
   });
 
   app.get(api.videos.list.path, async (req, res) => {
-    const videos = await storage.getVideos();
-    res.json(videos);
+    const user = currentUser(req);
+    const videoList = await storage.getVideos(user.id);
+    res.json(videoList);
   });
 
   app.get(api.videos.get.path, async (req, res) => {
-    const video = await storage.getVideo(Number(req.params.id));
+    const user = currentUser(req);
+    const video = await storage.getVideo(Number(req.params.id), user.id);
     if (!video) return res.status(404).json({ message: "Video not found" });
     res.json(video);
   });
@@ -449,7 +454,8 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Invalid YouTube URL" });
       }
 
-      const cachedVideo = await getCachedVideoByYouTubeId(videoId);
+      const user = currentUser(req);
+      const cachedVideo = await getCachedVideoByYouTubeId(videoId, user.id);
       if (cachedVideo) {
         return res.status(200).json(cachedVideo);
       }
@@ -525,7 +531,7 @@ export async function registerRoutes(
         duration: videoDetails?.duration || null,
         transcript: transcriptText,
         summary,
-      });
+      }, user.id);
       res.status(201).json(video);
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -536,7 +542,8 @@ export async function registerRoutes(
   });
 
   app.delete(api.videos.delete.path, async (req, res) => {
-    await storage.deleteVideo(Number(req.params.id));
+    const user = currentUser(req);
+    await storage.deleteVideo(Number(req.params.id), user.id);
     res.status(204).send();
   });
 
@@ -545,7 +552,8 @@ export async function registerRoutes(
   // GET /api/channels — returns the list of all saved channels
   app.get("/api/channels", async (req, res) => {
     try {
-      const channelList = await storage.getChannels(); // Fetch all channels from database
+      const user = currentUser(req);
+      const channelList = await storage.getChannels(user.id); // Fetch this user's channels
       res.json(channelList);
     } catch (err) {
       res.status(500).json({ message: "Could not load channels" });
@@ -571,13 +579,14 @@ export async function registerRoutes(
       }
 
       // Save the channel to our database
+      const user = currentUser(req);
       const channel = await storage.createChannel({
         channelUrl,
         channelName: channelInfo.channelName,
         channelId: channelInfo.channelId,
         channelThumbnailUrl: channelInfo.channelThumbnailUrl,
         lastCheckedAt: NEVER_CHECKED, // First update should pull recent videos
-      });
+      }, user.id);
 
       res.status(201).json(channel); // Send the saved channel back to the frontend
     } catch (err) {
@@ -588,11 +597,12 @@ export async function registerRoutes(
 
   app.post("/api/channels/update-all", async (req, res) => {
     try {
-      const channels = await storage.getChannels();
+      const user = currentUser(req);
+      const channels = await storage.getChannels(user.id);
       const results = [];
 
       for (const channel of channels) {
-        results.push(await updateFollowedChannel(channel.id));
+        results.push(await updateFollowedChannel(channel.id, user.id));
       }
 
       const summarized = results.reduce((total, result) => total + result.summarized, 0);
@@ -623,7 +633,8 @@ export async function registerRoutes(
   app.post("/api/channels/:id/update", async (req, res) => {
     try {
       const channelId = Number(req.params.id); // Get the channel ID from the URL
-      const channels = await storage.getChannels();
+      const user = currentUser(req);
+      const channels = await storage.getChannels(user.id);
       let channel = channels.find((c) => c.id === channelId); // Find this specific channel
 
       if (!channel)
@@ -640,7 +651,7 @@ export async function registerRoutes(
           channelId: resolvedChannel.channelId,
           channelName: resolvedChannel.channelName,
           channelThumbnailUrl: resolvedChannel.channelThumbnailUrl,
-        });
+        }, user.id);
       }
 
       // Ask YouTube for the most recent videos from this channel
@@ -665,7 +676,7 @@ export async function registerRoutes(
 
         // If no new videos found, tell the user
         if (!videosData.items || videosData.items.length === 0) {
-          await storage.updateChannelLastChecked(channelId); // Still update the timestamp
+          await storage.updateChannelLastChecked(channelId, user.id); // Still update the timestamp
           return res.json({ message: "No new videos found", summarized: 0 });
         }
       }
@@ -688,7 +699,7 @@ export async function registerRoutes(
           const sourceChannelId = videoDetails?.sourceChannelId || channel.channelId;
           const sourceChannelName = videoDetails?.sourceChannelName || channel.channelName;
           const duration = videoDetails?.duration || null;
-          const cachedVideo = await getCachedVideoByYouTubeId(videoId);
+          const cachedVideo = await getCachedVideoByYouTubeId(videoId, user.id);
           if (cachedVideo) {
             reusedCached++;
             if (
@@ -700,7 +711,7 @@ export async function registerRoutes(
                 sourceChannelId,
                 sourceChannelName,
                 duration,
-              });
+              }, user.id);
               updatedCachedMetadata++;
             }
             continue;
@@ -762,7 +773,7 @@ export async function registerRoutes(
             duration,
             transcript: transcriptText,
             summary,
-          });
+          }, user.id);
 
           summarized.push(savedVideo); // Add to our results list
         } catch (e) {
@@ -773,7 +784,7 @@ export async function registerRoutes(
       }
 
       // Update the "last checked" time so next update only finds NEWER videos
-      await storage.updateChannelLastChecked(channelId);
+      await storage.updateChannelLastChecked(channelId, user.id);
 
       // Tell the frontend how many videos were summarized
       res.json({
@@ -799,7 +810,8 @@ export async function registerRoutes(
   app.delete("/api/channels/:id", async (req, res) => {
     try {
       const channelId = Number(req.params.id);
-      await storage.deleteChannel(channelId);
+      const user = currentUser(req);
+      await storage.deleteChannel(channelId, user.id);
       res.status(204).send();
     } catch (err) {
       console.error("Delete channel error:", err);

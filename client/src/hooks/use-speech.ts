@@ -48,6 +48,7 @@ function splitSpeechText(text: string) {
 async function fetchSpeechAudio(text: string, signal: AbortSignal) {
   const res = await fetch("/api/tts", {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
     signal,

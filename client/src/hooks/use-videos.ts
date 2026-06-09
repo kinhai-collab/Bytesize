@@ -7,7 +7,7 @@ export function useVideos() {
   return useQuery({
     queryKey: [api.videos.list.path],
     queryFn: async () => {
-      const res = await fetch(api.videos.list.path);
+      const res = await fetch(api.videos.list.path, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch videos");
       return api.videos.list.responses[200].parse(await res.json());
     },
@@ -21,7 +21,7 @@ export function useVideo(id: number) {
     enabled: !isNaN(id),
     queryFn: async () => {
       const url = buildUrl(api.videos.get.path, { id });
-      const res = await fetch(url);
+      const res = await fetch(url, { credentials: "include" });
       
       if (res.status === 404) return null;
       if (!res.ok) throw new Error("Failed to fetch video");
@@ -41,6 +41,7 @@ export function useCreateVideo() {
       const validated = api.videos.create.input.parse(data);
       const res = await fetch(api.videos.create.path, {
         method: api.videos.create.method,
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(validated),
       });
@@ -82,6 +83,7 @@ export function useDeleteVideo() {
       const url = buildUrl(api.videos.delete.path, { id });
       const res = await fetch(url, {
         method: api.videos.delete.method,
+        credentials: "include",
       });
 
       if (!res.ok && res.status !== 404) {

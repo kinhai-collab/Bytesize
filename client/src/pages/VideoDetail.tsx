@@ -6,10 +6,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import ReactPlayer from "react-player";
 import { Loader2, ArrowLeft, Trash2, Copy, Check, Volume2, Square } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
+import { useSpeech } from "@/hooks/use-speech";
 import { useToast } from "@/hooks/use-toast";
 import { motion } from "framer-motion";
-import { apiRequest } from "@/lib/queryClient";
 
 export default function VideoDetail() {
   const [, params] = useRoute("/video/:id");
@@ -21,54 +21,18 @@ export default function VideoDetail() {
   const { toast } = useToast();
   
   const [copied, setCopied] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isGeneratingSpeech, setIsGeneratingSpeech] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const { isSpeaking, speak, stop } = useSpeech({
+    onError: (message) => toast({ title: message, variant: "destructive" }),
+  });
 
-  useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-    };
-  }, []);
-
-  const handleSpeak = async () => {
+  const handleSpeak = () => {
     if (isSpeaking) {
-      audioRef.current?.pause();
-      setIsSpeaking(false);
+      stop();
       return;
     }
 
     if (!video?.summary) return;
-
-    try {
-      setIsGeneratingSpeech(true);
-      const res = await apiRequest("POST", "/api/tts", { text: video.summary });
-      const { audioUrl } = await res.json();
-
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-
-      const audio = new Audio(audioUrl);
-      audioRef.current = audio;
-
-      audio.onplay = () => setIsSpeaking(true);
-      audio.onended = () => setIsSpeaking(false);
-      audio.onerror = () => {
-        setIsSpeaking(false);
-        toast({ title: "Failed to play audio", variant: "destructive" });
-      };
-
-      await audio.play();
-    } catch (error) {
-      console.error("TTS error:", error);
-      toast({ title: "Failed to generate speech", variant: "destructive" });
-    } finally {
-      setIsGeneratingSpeech(false);
-    }
+    speak(video.summary);
   };
 
   const handleDelete = () => {
@@ -189,16 +153,13 @@ export default function VideoDetail() {
                                 size="sm"
                                 className="h-8 text-xs"
                                 onClick={handleSpeak}
-                                disabled={isGeneratingSpeech}
                               >
-                                {isGeneratingSpeech ? (
-                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                                ) : isSpeaking ? (
+                                {isSpeaking ? (
                                   <Square className="w-3 h-3 mr-1" />
                                 ) : (
                                   <Volume2 className="w-3 h-3 mr-1" />
                                 )}
-                                {isGeneratingSpeech ? "Generating..." : isSpeaking ? "Stop" : "Read Aloud"}
+                                {isSpeaking ? "Stop" : "Read Aloud"}
                               </Button>
                               <Button 
                                 variant="ghost" 

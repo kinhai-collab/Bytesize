@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
@@ -26,8 +26,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useSpeech } from "@/hooks/use-speech";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
 import { useCreateVideo, useDeleteVideo, useVideos } from "@/hooks/use-videos";
 
 type Channel = {
@@ -493,18 +493,9 @@ function InlineVideoFrame({
 }) {
   const { toast } = useToast();
   const [copiedSection, setCopiedSection] = useState<"summary" | "transcript" | null>(null);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isGeneratingSpeech, setIsGeneratingSpeech] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-    };
-  }, []);
+  const { isSpeaking, speak, stop } = useSpeech({
+    onError: (message) => toast({ title: message, variant: "destructive" }),
+  });
 
   const copyToClipboard = (text: string, section: "summary" | "transcript") => {
     navigator.clipboard.writeText(text);
@@ -513,37 +504,14 @@ function InlineVideoFrame({
     setTimeout(() => setCopiedSection(null), 2000);
   };
 
-  const handleSpeak = async () => {
+  const handleSpeak = () => {
     if (isSpeaking) {
-      audioRef.current?.pause();
-      setIsSpeaking(false);
+      stop();
       return;
     }
 
     if (!video.summary) return;
-
-    try {
-      setIsGeneratingSpeech(true);
-      const res = await apiRequest("POST", "/api/tts", { text: video.summary });
-      const { audioUrl } = await res.json();
-
-      audioRef.current?.pause();
-      const audio = new Audio(audioUrl);
-      audioRef.current = audio;
-      audio.onplay = () => setIsSpeaking(true);
-      audio.onended = () => setIsSpeaking(false);
-      audio.onerror = () => {
-        setIsSpeaking(false);
-        toast({ title: "Failed to play audio", variant: "destructive" });
-      };
-
-      await audio.play();
-    } catch (error) {
-      console.error("TTS error:", error);
-      toast({ title: "Failed to generate speech", variant: "destructive" });
-    } finally {
-      setIsGeneratingSpeech(false);
-    }
+    speak(video.summary);
   };
 
   return (
@@ -613,16 +581,13 @@ function InlineVideoFrame({
                         size="sm"
                         className="h-8 text-xs"
                         onClick={handleSpeak}
-                        disabled={isGeneratingSpeech}
                       >
-                        {isGeneratingSpeech ? (
-                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                        ) : isSpeaking ? (
+                        {isSpeaking ? (
                           <Square className="mr-1 h-3 w-3" />
                         ) : (
                           <Volume2 className="mr-1 h-3 w-3" />
                         )}
-                        {isGeneratingSpeech ? "Generating..." : isSpeaking ? "Stop" : "Read aloud"}
+                        {isSpeaking ? "Stop" : "Read aloud"}
                       </Button>
                       <Button
                         type="button"

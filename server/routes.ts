@@ -22,6 +22,32 @@ const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY; // Our new YouTube Data API
 const NEVER_CHECKED = new Date(0);
 const BROKEN_INITIAL_CHECK_CUTOFF = new Date("2026-06-08T00:00:00.000Z");
 
+function buildSummaryPrompt(title: string, transcript: string) {
+  return [
+    "You are a ruthless video summarizer for busy people.",
+    "",
+    "Goal: explain the real point of the video in a summary that can be read aloud in under 1 minute.",
+    "",
+    "Rules:",
+    "- Be short, specific, and direct: 90-130 words total.",
+    "- Do not summarize the video's intro, hype, sponsor messages, or repeated setup.",
+    "- If the title or speaker uses teaser language like \"you will not believe this\" or \"this can improve your health,\" identify what \"this\" actually is from the transcript.",
+    "- Lead with the main takeaway, claim, recommendation, or conclusion.",
+    "- Include only the 2-4 most important supporting points.",
+    "- If the video gives advice, state the practical action the viewer should take.",
+    "- If the transcript does not clearly support a claim, say that plainly instead of guessing.",
+    "- No markdown headings, no bullet points, no timestamps, no filler.",
+    "",
+    "Output format:",
+    "A single concise paragraph.",
+    "",
+    `Video title: ${title}`,
+    "",
+    "Transcript:",
+    transcript.slice(0, 100000),
+  ].join("\n");
+}
+
 type YouTubeChannelInfo = {
   channelId: string;
   channelName: string;
@@ -315,11 +341,11 @@ async function updateFollowedChannel(channelId: number, userId: number) {
 
       const summaryRes = await anthropic.messages.create({
         model: "claude-sonnet-4-20250514",
-        max_tokens: 2048,
+        max_tokens: 650,
         messages: [
           {
             role: "user",
-            content: `You are an expert video summarizer. Write a detailed summary.\n\nVideo: ${videoTitle}\n\nTranscript:\n${transcriptText.slice(0, 100000)}`,
+            content: buildSummaryPrompt(videoTitle, transcriptText),
           },
         ],
       });
@@ -504,15 +530,10 @@ export async function registerRoutes(
 
       let summary = "";
       try {
-        const prompt =
-          "You are an expert video summarizer. Write a detailed summary.\n\nVideo: " +
-          title +
-          "\n\nTranscript:\n" +
-          transcriptText.slice(0, 100000);
         const response = await anthropic.messages.create({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 2048,
-          messages: [{ role: "user", content: prompt }],
+          max_tokens: 650,
+          messages: [{ role: "user", content: buildSummaryPrompt(title, transcriptText) }],
         });
         summary =
           response.content[0].type === "text"
@@ -749,11 +770,11 @@ export async function registerRoutes(
           // Generate AI summary using Claude (same as existing feature)
           const summaryRes = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
-            max_tokens: 2048,
+            max_tokens: 650,
             messages: [
               {
                 role: "user",
-                content: `You are an expert video summarizer. Write a detailed summary.\n\nVideo: ${videoTitle}\n\nTranscript:\n${transcriptText.slice(0, 100000)}`,
+                content: buildSummaryPrompt(videoTitle, transcriptText),
               },
             ],
           });

@@ -130,24 +130,24 @@ export default function VideoDetail() {
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.2 }}
-            className="lg:col-span-1"
+            className="lg:col-span-1 min-w-0"
           >
-            <div className="sticky top-24 bg-card rounded-2xl border border-border/50 shadow-lg shadow-black/5 overflow-hidden flex flex-col h-[calc(100vh-8rem)]">
-              <Tabs defaultValue="summary" className="flex flex-col h-full">
-                <div className="p-4 border-b border-border/50 bg-secondary/30">
+            <div className="sticky top-24 bg-card rounded-2xl border border-border/50 shadow-lg shadow-black/5 overflow-hidden flex flex-col h-auto lg:h-[calc(100vh-8rem)]">
+              <Tabs defaultValue="summary" className="flex min-h-0 flex-1 flex-col">
+                <div className="shrink-0 p-4 border-b border-border/50 bg-secondary/30">
                   <TabsList className="w-full grid grid-cols-2">
                     <TabsTrigger value="summary">Summary</TabsTrigger>
                     <TabsTrigger value="transcript">Transcript</TabsTrigger>
                   </TabsList>
                 </div>
 
-                <div className="flex-grow overflow-hidden relative bg-card">
-                  <TabsContent value="summary" className="h-full m-0">
+                <div className="min-h-0 flex-1 overflow-hidden bg-card">
+                  <TabsContent value="summary" className="h-full m-0 data-[state=inactive]:hidden">
                     <ScrollArea className="h-full">
                       <div className="p-6">
                         {video.summary ? (
-                          <div className="prose prose-sm md:prose-base dark:prose-invert max-w-none">
-                            <div className="flex justify-end gap-2 mb-2">
+                          <div className="w-full max-w-none">
+                            <div className="flex justify-end gap-2 mb-4">
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -173,7 +173,7 @@ export default function VideoDetail() {
                                 {copied ? "Copied" : "Copy"}
                               </Button>
                             </div>
-                            <div className="whitespace-pre-wrap leading-relaxed text-muted-foreground">
+                            <div className="w-full whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground md:text-base">
                               {video.summary}
                             </div>
                           </div>
@@ -190,12 +190,12 @@ export default function VideoDetail() {
                     </ScrollArea>
                   </TabsContent>
 
-                  <TabsContent value="transcript" className="h-full m-0">
+                  <TabsContent value="transcript" className="h-full m-0 data-[state=inactive]:hidden">
                     <ScrollArea className="h-full">
                       <div className="p-6">
                          {video.transcript ? (
-                          <div className="prose prose-sm dark:prose-invert max-w-none">
-                            <div className="flex justify-end mb-2">
+                          <div className="w-full max-w-none">
+                            <div className="flex justify-end mb-4">
                               <Button 
                                 variant="ghost" 
                                 size="sm" 
@@ -206,7 +206,7 @@ export default function VideoDetail() {
                                 {copied ? "Copied" : "Copy"}
                               </Button>
                             </div>
-                            <p className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-muted-foreground">
+                            <p className="w-full whitespace-pre-wrap font-mono text-xs leading-relaxed text-muted-foreground">
                               {video.transcript}
                             </p>
                           </div>

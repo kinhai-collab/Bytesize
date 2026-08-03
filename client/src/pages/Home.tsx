@@ -1,466 +1,281 @@
-import { useMemo, useState } from "react";
-import { Link } from "wouter";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
-  Check,
+  Bookmark,
   CheckCircle2,
-  Copy,
-  Grid3X3,
+  Clock3,
+  Headphones,
+  Home as HomeIcon,
+  LayoutGrid,
+  Library,
   Loader2,
   LogOut,
-  Minimize2,
-  PanelRightClose,
-  PanelRightOpen,
+  Pause,
+  Play,
   Plus,
-  RefreshCw,
+  Search,
   Sparkles,
-  Square,
   Trash2,
   UserCircle2,
   Volume2,
+  X,
   Youtube,
 } from "lucide-react";
 import ReactPlayer from "react-player";
 import { type Video } from "@shared/schema";
-import { api } from "@shared/routes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useSpeech } from "@/hooks/use-speech";
-import { useToast } from "@/hooks/use-toast";
 import { useAuth, useLogout } from "@/hooks/use-auth";
 import { useCreateVideo, useDeleteVideo, useVideos } from "@/hooks/use-videos";
+import { useSpeech } from "@/hooks/use-speech";
+import { useToast } from "@/hooks/use-toast";
 
 type Channel = {
   id: number;
-  channelUrl: string;
   channelName: string;
   channelId: string;
   channelThumbnailUrl?: string | null;
-  lastCheckedAt: string;
-  createdAt: string;
 };
 
 export default function Home() {
   const [summaryInput, setSummaryInput] = useState("");
-  const [channelInput, setChannelInput] = useState("");
-  const [showAddChannel, setShowAddChannel] = useState(false);
-  const [selectedChannelId, setSelectedChannelId] = useState<number | "all">("all");
-  const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [updatingId, setUpdatingId] = useState<number | null>(null);
-  const [updatingAll, setUpdatingAll] = useState(false);
-  const [removingId, setRemovingId] = useState<number | null>(null);
-  const [expandedVideoId, setExpandedVideoId] = useState<number | null>(null);
-
-  const { data: videos = [], isLoading: videosLoading } = useVideos();
-  const { mutate: createVideo, isPending: isCreatingVideo } = useCreateVideo();
+  const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
+  const [selectedChannel, setSelectedChannel] = useState<string>("all");
+  const { data: videos = [], isLoading } = useVideos();
+  const { mutate: createVideo, isPending: isCreating } = useCreateVideo();
   const { mutate: deleteVideo } = useDeleteVideo();
   const { data: auth } = useAuth();
   const logout = useLogout();
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
 
-  const { data: channels = [], isLoading: channelsLoading } = useQuery<Channel[]>({
+  const { data: channels = [] } = useQuery<Channel[]>({
     queryKey: ["channels"],
     queryFn: async () => {
-      const res = await fetch("/api/channels", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to load channels");
-      return res.json();
+      const response = await fetch("/api/channels", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to load channels");
+      return response.json();
     },
   });
-
-  const addChannelMutation = useMutation({
-    mutationFn: async (channelUrl: string) => {
-      const res = await fetch("/api/channels", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelUrl }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => null);
-        throw new Error(err?.message || "Failed to add channel");
-      }
-      return res.json();
-    },
-    onSuccess: (channel: Channel) => {
-      setChannelInput("");
-      setShowAddChannel(false);
-      queryClient.invalidateQueries({ queryKey: ["channels"] });
-      toast({
-        title: "Channel added",
-        description: `${channel.channelName} is now being followed.`,
-      });
-    },
-    onError: (err: Error) => {
-      toast({
-        title: "Couldn't add channel",
-        description: err.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const removeChannelMutation = useMutation({
-    mutationFn: async (channelId: number) => {
-      const res = await fetch(`/api/channels/${channelId}`, { method: "DELETE", credentials: "include" });
-      if (!res.ok) {
-        const err = await res.json().catch(() => null);
-        throw new Error(err?.message || "Failed to remove channel");
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["channels"] });
-      toast({
-        title: "Channel removed",
-        description: "This channel will no longer be tracked.",
-      });
-    },
-    onError: (err: Error) => {
-      toast({
-        title: "Couldn't remove channel",
-        description: err.message,
-        variant: "destructive",
-      });
-    },
-    onSettled: () => setRemovingId(null),
-  });
-
-  const recentCounts = useMemo(() => {
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const counts = new Map<string, number>();
-
-    videos.forEach((video) => {
-      const createdAt = video.createdAt ? new Date(video.createdAt).getTime() : 0;
-      if (createdAt < oneDayAgo || !video.sourceChannelId) return;
-      counts.set(video.sourceChannelId, (counts.get(video.sourceChannelId) || 0) + 1);
-    });
-
-    return counts;
-  }, [videos]);
 
   const filteredVideos = useMemo(() => {
-    if (selectedChannelId === "all") return videos;
-    const channel = channels.find((item) => item.id === selectedChannelId);
-    if (!channel) return videos;
-    return videos.filter((video) => matchesVideoChannel(video, channel));
-  }, [channels, selectedChannelId, videos]);
+    if (selectedChannel === "all") return videos;
+    return videos.filter((video) => video.sourceChannelId === selectedChannel);
+  }, [selectedChannel, videos]);
 
-  const totalHoursSaved = Math.max(1, Math.round(videos.length * 0.25));
+  useEffect(() => {
+    if (!selectedVideo && filteredVideos.length) setSelectedVideo(filteredVideos[0]);
+    if (selectedVideo && !filteredVideos.some((video) => video.id === selectedVideo.id)) {
+      setSelectedVideo(filteredVideos[0] || null);
+    }
+  }, [filteredVideos, selectedVideo]);
 
-  const handleSummarize = (event: React.FormEvent) => {
+  const featured = filteredVideos[0];
+  const trending = filteredVideos.slice(1, 5);
+  const latest = filteredVideos.slice(1);
+
+  const submitSummary = (event: React.FormEvent) => {
     event.preventDefault();
     const url = summaryInput.trim();
     if (!url) return;
-
-    createVideo(
-      { url },
-      {
-        onSuccess: () => setSummaryInput(""),
-      },
-    );
+    createVideo({ url }, { onSuccess: () => setSummaryInput("") });
   };
 
-  const handleAddChannel = (event?: React.FormEvent) => {
-    event?.preventDefault();
-    const url = channelInput.trim();
-    if (!url) return;
-    addChannelMutation.mutate(url);
-  };
-
-  const handleUpdateChannel = async (channel: Channel) => {
-    setUpdatingId(channel.id);
-    try {
-      const res = await fetch(`/api/channels/${channel.id}/update`, {
-        method: "POST",
-        credentials: "include",
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.message || "Failed to update channel");
-
-      queryClient.invalidateQueries({ queryKey: [api.videos.list.path] });
-      queryClient.invalidateQueries({ queryKey: ["channels"] });
-      toast({
-        title: data.summarized > 0 ? `${data.summarized} new summaries` : "All caught up",
-        description: data.message,
-      });
-    } catch (err: any) {
-      toast({
-        title: "Update failed",
-        description: err.message || "Something went wrong. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setUpdatingId(null);
-    }
-  };
-
-  const handleUpdateAllChannels = async () => {
-    setUpdatingAll(true);
-    try {
-      const res = await fetch("/api/channels/update-all", {
-        method: "POST",
-        credentials: "include",
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.message || "Failed to update channels");
-
-      queryClient.invalidateQueries({ queryKey: [api.videos.list.path] });
-      queryClient.invalidateQueries({ queryKey: ["channels"] });
-      toast({
-        title: data.summarized > 0 ? `${data.summarized} new summaries` : "All channels checked",
-        description: data.message,
-      });
-    } catch (err: any) {
-      toast({
-        title: "Update failed",
-        description: err.message || "Something went wrong. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setUpdatingAll(false);
-    }
-  };
-
-  const handleRemoveChannel = (channel: Channel) => {
-    if (!confirm(`Remove ${channel.channelName}? New videos from this channel will no longer be tracked.`)) {
-      return;
-    }
-
-    setRemovingId(channel.id);
-    removeChannelMutation.mutate(channel.id);
-  };
-
-  const handleDeleteVideo = (videoId: number) => {
-    if (!confirm("Delete this summary?")) return;
-
-    deleteVideo(videoId, {
+  const removeVideo = (video: Video) => {
+    if (!confirm(`Delete “${video.title}”?`)) return;
+    deleteVideo(video.id, {
       onSuccess: () => {
-        if (expandedVideoId === videoId) {
-          setExpandedVideoId(null);
-        }
+        if (selectedVideo?.id === video.id) setSelectedVideo(null);
       },
     });
   };
 
   return (
-    <div className="min-h-screen bg-[#F6F6F8] text-foreground">
-      <TopNav
-        inputValue={summaryInput}
-        isCreating={isCreatingVideo}
-        isPanelOpen={rightPanelOpen}
-        onInputChange={setSummaryInput}
-        onSubmit={handleSummarize}
-        onTogglePanel={() => setRightPanelOpen((value) => !value)}
-        userEmail={auth?.user?.email || ""}
-        userName={auth?.user?.displayName || null}
-        logoutPending={logout.isPending}
+    <div className="min-h-screen bg-[#09090e] text-[#f5f3fa]">
+      <Header
+        value={summaryInput}
+        pending={isCreating}
+        userName={auth?.user?.displayName || auth?.user?.email || "Account"}
+        onChange={setSummaryInput}
+        onSubmit={submitSummary}
         onLogout={() => logout.mutate()}
       />
 
-      <main
-        className={`grid w-full gap-0 px-4 py-5 lg:px-6 ${
-          rightPanelOpen ? "lg:grid-cols-[minmax(0,7fr)_minmax(320px,3fr)]" : "lg:grid-cols-1"
-        }`}
-      >
-        <section className="min-w-0 pr-0 lg:pr-6">
-          <ChannelFilterRow
-            channels={channels}
-            recentCounts={recentCounts}
-            selectedChannelId={selectedChannelId}
-            onSelect={setSelectedChannelId}
-          />
+      <div className="grid min-h-[calc(100vh-72px)] lg:grid-cols-[220px_minmax(0,1fr)]">
+        <Sidebar channels={channels} selected={selectedChannel} onSelect={setSelectedChannel} />
 
-          <div className="mt-5 space-y-3">
-            {videosLoading ? (
-              <LoadingState />
-            ) : filteredVideos.length === 0 ? (
-              <EmptyState />
-            ) : (
-              filteredVideos.map((video) => (
-                <SummaryCard
-                  key={video.id}
-                  video={video}
-                  isExpanded={expandedVideoId === video.id}
-                  onDelete={() => handleDeleteVideo(video.id)}
-                  onMinimize={() => setExpandedVideoId(null)}
-                  onToggle={() => setExpandedVideoId((current) => (current === video.id ? null : video.id))}
-                />
-              ))
-            )}
-          </div>
-        </section>
+        <main className="min-w-0 px-4 py-6 sm:px-6 xl:px-8">
+          {isLoading ? (
+            <div className="flex min-h-[55vh] items-center justify-center">
+              <Loader2 className="h-8 w-8 animate-spin text-violet-500" />
+            </div>
+          ) : !featured ? (
+            <EmptyState />
+          ) : (
+            <div className={`grid gap-6 ${selectedVideo ? "2xl:grid-cols-[minmax(0,1fr)_430px]" : ""}`}>
+              <div className="min-w-0">
+                <section className="grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(280px,.95fr)]">
+                  <FeaturedCard video={featured} onSelect={() => setSelectedVideo(featured)} />
+                  <TrendingList videos={trending} onSelect={setSelectedVideo} />
+                </section>
 
-        {rightPanelOpen && (
-          <RightPanel
-            channels={channels}
-            channelsLoading={channelsLoading}
-            recentCounts={recentCounts}
-            totalSummaries={videos.length}
-            totalHoursSaved={totalHoursSaved}
-            addChannelPending={addChannelMutation.isPending}
-            channelInput={channelInput}
-            removingId={removingId}
-            showAddChannel={showAddChannel}
-            updatingAll={updatingAll}
-            updatingId={updatingId}
-            onAddChannel={handleAddChannel}
-            onChannelInputChange={setChannelInput}
-            onRemoveChannel={handleRemoveChannel}
-            onShowAddChannelChange={setShowAddChannel}
-            onUpdateAllChannels={handleUpdateAllChannels}
-            onUpdateChannel={handleUpdateChannel}
-          />
-        )}
-      </main>
+                <section className="mt-8">
+                  <div className="mb-4 flex items-end justify-between">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-400">Your briefings</p>
+                      <h2 className="mt-1 text-2xl font-semibold">Latest summaries</h2>
+                    </div>
+                    <span className="text-sm text-[#8f8b9c]">{filteredVideos.length} briefings</span>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {latest.map((video) => (
+                      <EditorialCard
+                        key={video.id}
+                        video={video}
+                        selected={selectedVideo?.id === video.id}
+                        onSelect={() => setSelectedVideo(video)}
+                        onDelete={() => removeVideo(video)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              {selectedVideo && <BriefingPanel video={selectedVideo} onClose={() => setSelectedVideo(null)} />}
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
 
-function TopNav({
-  inputValue,
-  isCreating,
-  isPanelOpen,
-  onInputChange,
-  onSubmit,
-  onTogglePanel,
-  userEmail,
+function Header({
+  value,
+  pending,
   userName,
-  logoutPending,
+  onChange,
+  onSubmit,
   onLogout,
 }: {
-  inputValue: string;
-  isCreating: boolean;
-  isPanelOpen: boolean;
-  onInputChange: (value: string) => void;
+  value: string;
+  pending: boolean;
+  userName: string;
+  onChange: (value: string) => void;
   onSubmit: (event: React.FormEvent) => void;
-  onTogglePanel: () => void;
-  userEmail: string;
-  userName: string | null;
-  logoutPending: boolean;
   onLogout: () => void;
 }) {
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-[#E3E3EA] bg-white">
-      <form
-        onSubmit={onSubmit}
-        className="flex h-16 w-full items-center gap-3 px-4 lg:px-6"
-      >
-        <Link href="/" className="flex shrink-0 items-center gap-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#F1F0FF] text-[#7F77DD]">
+    <header className="sticky top-0 z-50 flex h-[72px] items-center border-b border-white/10 bg-[#09090e]/95 px-4 backdrop-blur-xl sm:px-6">
+      <div className="flex w-full items-center gap-4">
+        <div className="flex w-[196px] shrink-0 items-center gap-2.5">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 shadow-[0_0_28px_rgba(124,58,237,.28)]">
             <Sparkles className="h-5 w-5" />
           </span>
           <span className="font-display text-xl font-bold">Bytesize</span>
-        </Link>
-
-        <div className="relative min-w-0 flex-1">
-          <Youtube className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-[#7F77DD]" />
-          <Input
-            value={inputValue}
-            onChange={(event) => onInputChange(event.target.value)}
-            placeholder="Paste a YouTube URL or search summaries..."
-            className="h-11 rounded-lg border-[#DCDCE6] bg-white pl-11 pr-3 text-sm shadow-none focus-visible:ring-[#7F77DD]"
-            disabled={isCreating}
-          />
         </div>
 
-        <Button
-          type="submit"
-          disabled={!inputValue.trim() || isCreating}
-          className="h-11 shrink-0 rounded-lg bg-[#7F77DD] px-4 font-semibold text-white hover:bg-[#7169C9]"
-        >
-          {isCreating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-          <span className="hidden sm:inline">Summarize</span>
-        </Button>
-
-        <div className="hidden min-w-0 items-center gap-2 rounded-lg border border-[#E3E3EA] px-3 py-2 md:flex">
-          <UserCircle2 className="h-4 w-4 shrink-0 text-[#7F77DD]" />
-          <div className="min-w-0">
-            <p className="truncate text-xs font-semibold leading-none">{userName || userEmail}</p>
-            {userName && <p className="mt-1 truncate text-[11px] leading-none text-muted-foreground">{userEmail}</p>}
+        <form onSubmit={onSubmit} className="mx-auto flex max-w-3xl flex-1 items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#777383]" />
+            <Input
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              placeholder="Drop a link. Get the signal."
+              disabled={pending}
+              className="h-11 rounded-xl border-white/10 bg-[#111119] pl-10 text-[#f5f3fa] placeholder:text-[#777383] focus-visible:ring-violet-500"
+            />
           </div>
+          <Button type="submit" disabled={!value.trim() || pending} className="h-11 rounded-xl bg-violet-600 px-5 font-semibold text-white hover:bg-violet-500">
+            {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+            Summarize
+          </Button>
+        </form>
+
+        <div className="hidden w-[196px] items-center justify-end gap-2 lg:flex">
+          <UserCircle2 className="h-5 w-5 text-violet-400" />
+          <span className="max-w-[105px] truncate text-sm text-[#aaa6b5]">{userName}</span>
+          <Button variant="ghost" size="icon" onClick={onLogout} aria-label="Sign out" className="text-[#8f8b9c] hover:bg-white/5 hover:text-white">
+            <LogOut className="h-4 w-4" />
+          </Button>
         </div>
-
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="Sign out"
-          className="h-10 w-10 shrink-0 rounded-lg text-muted-foreground hover:bg-[#F1F0FF] hover:text-[#7F77DD]"
-          onClick={onLogout}
-          disabled={logoutPending}
-        >
-          {logoutPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-5 w-5" />}
-        </Button>
-
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label={isPanelOpen ? "Hide right panel" : "Show right panel"}
-          className="h-10 w-10 shrink-0 rounded-lg text-muted-foreground hover:bg-[#F1F0FF] hover:text-[#7F77DD]"
-          onClick={onTogglePanel}
-        >
-          {isPanelOpen ? <PanelRightClose className="h-5 w-5" /> : <PanelRightOpen className="h-5 w-5" />}
-        </Button>
-      </form>
+      </div>
     </header>
   );
 }
 
-function ChannelFilterRow({
-  channels,
-  recentCounts,
-  selectedChannelId,
-  onSelect,
-}: {
-  channels: Channel[];
-  recentCounts: Map<string, number>;
-  selectedChannelId: number | "all";
-  onSelect: (id: number | "all") => void;
-}) {
-  const allNewCount = Array.from(recentCounts.values()).reduce((sum, count) => sum + count, 0);
-
+function Sidebar({ channels, selected, onSelect }: { channels: Channel[]; selected: string; onSelect: (id: string) => void }) {
   return (
-    <div className="overflow-x-auto border-b border-[#E3E3EA] px-1 pb-4 pt-2">
-      <div className="flex min-w-max items-start gap-4 py-1">
-        <button
-          type="button"
-          onClick={() => onSelect("all")}
-          className="group flex w-16 flex-col items-center gap-1.5 text-center"
-        >
-          <span
-            className={`relative flex h-12 w-12 items-center justify-center rounded-full bg-[#7F77DD] text-white transition-transform group-hover:scale-105 ${
-              selectedChannelId === "all" ? "ring-2 ring-[#7F77DD] ring-offset-2" : ""
-            }`}
-          >
-            <Grid3X3 className="h-5 w-5" />
-            {allNewCount > 0 && <span className="absolute right-0 top-0 h-3 w-3 rounded-full border-2 border-white bg-red-500" />}
-          </span>
-          <span className={`w-full truncate text-[10px] ${selectedChannelId === "all" ? "text-[#7F77DD]" : "text-muted-foreground"}`}>
-            All
-          </span>
+    <aside className="hidden border-r border-white/10 bg-[#0c0c12] p-3 lg:block">
+      <nav className="space-y-1">
+        <NavItem icon={HomeIcon} label="Home" active />
+        <NavItem icon={Clock3} label="Latest" />
+        <NavItem icon={LayoutGrid} label="Channels" />
+        <NavItem icon={Bookmark} label="Saved" />
+      </nav>
+      <div className="my-5 h-px bg-white/10" />
+      <p className="px-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#686473]">Channels</p>
+      <div className="mt-2 space-y-1">
+        <button onClick={() => onSelect("all")} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${selected === "all" ? "bg-violet-500/15 text-violet-300" : "text-[#aaa6b5] hover:bg-white/5 hover:text-white"}`}>
+          <Library className="h-4 w-4" /> All briefings
         </button>
+        {channels.slice(0, 8).map((channel) => (
+          <button key={channel.id} onClick={() => onSelect(channel.channelId)} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm transition ${selected === channel.channelId ? "bg-violet-500/15 text-violet-300" : "text-[#aaa6b5] hover:bg-white/5 hover:text-white"}`}>
+            <ChannelAvatar channel={channel} />
+            <span className="truncate">{channel.channelName}</span>
+          </button>
+        ))}
+      </div>
+      <div className="mt-8 rounded-2xl border border-violet-500/20 bg-gradient-to-br from-violet-500/15 to-transparent p-4">
+        <Sparkles className="h-5 w-5 text-violet-400" />
+        <p className="mt-3 font-display text-sm font-semibold">Summaries that cut through.</p>
+        <p className="mt-1 text-xs leading-5 text-[#8f8b9c]">Save time. Stay sharp.</p>
+      </div>
+    </aside>
+  );
+}
 
-        {channels.map((channel) => (
-          <button
-            key={channel.id}
-            type="button"
-            onClick={() => onSelect(channel.id)}
-            className="group flex w-16 flex-col items-center gap-1.5 text-center"
-          >
-            <ChannelAvatar
-              channel={channel}
-              className={`h-12 w-12 transition-transform group-hover:scale-105 ${
-                selectedChannelId === channel.id ? "ring-2 ring-[#7F77DD] ring-offset-2" : ""
-              }`}
-              showDot={(recentCounts.get(channel.channelId) || 0) > 0}
-            />
-            <span className={`w-full truncate text-[10px] ${selectedChannelId === channel.id ? "text-[#7F77DD]" : "text-muted-foreground"}`}>
-              {channel.channelName}
-            </span>
+function NavItem({ icon: Icon, label, active = false }: { icon: typeof HomeIcon; label: string; active?: boolean }) {
+  return (
+    <button className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition ${active ? "bg-violet-500/15 text-violet-300" : "text-[#aaa6b5] hover:bg-white/5 hover:text-white"}`}>
+      <Icon className="h-4 w-4" /> {label}
+    </button>
+  );
+}
+
+function FeaturedCard({ video, onSelect }: { video: Video; onSelect: () => void }) {
+  return (
+    <button onClick={onSelect} className="group relative min-h-[320px] overflow-hidden rounded-2xl border border-white/10 bg-[#14141c] text-left">
+      <VideoImage video={video} className="absolute inset-0 h-full w-full object-cover transition duration-700 group-hover:scale-[1.03]" />
+      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
+      <div className="absolute inset-x-0 bottom-0 p-6">
+        <span className="mb-3 inline-flex rounded-md bg-violet-600 px-2 py-1 text-[10px] font-bold uppercase tracking-[.16em]">Featured briefing</span>
+        <h1 className="max-w-2xl text-2xl font-semibold leading-tight sm:text-3xl">{video.title}</h1>
+        <p className="mt-2 line-clamp-2 max-w-2xl text-sm leading-6 text-white/75">{stripMarkdown(video.summary || "Your briefing is being prepared.")}</p>
+        <VideoMeta video={video} className="mt-4 text-white/70" />
+      </div>
+    </button>
+  );
+}
+
+function TrendingList({ videos, onSelect }: { videos: Video[]; onSelect: (video: Video) => void }) {
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="font-display text-lg font-semibold">Trending summaries</h2>
+        <span className="text-xs text-violet-400">Fresh signal</span>
+      </div>
+      <div className="space-y-2.5">
+        {videos.map((video) => (
+          <button key={video.id} onClick={() => onSelect(video)} className="group flex w-full gap-3 rounded-xl border border-white/10 bg-[#111118] p-2 text-left transition hover:border-violet-500/50 hover:bg-[#16151f]">
+            <div className="relative h-[76px] w-[124px] shrink-0 overflow-hidden rounded-lg">
+              <VideoImage video={video} className="h-full w-full object-cover transition group-hover:scale-105" />
+              <DurationBadge video={video} />
+            </div>
+            <div className="min-w-0 py-1">
+              <h3 className="line-clamp-2 text-sm font-semibold leading-5">{video.title}</h3>
+              <p className="mt-2 text-xs text-[#777383]">{readingTime(video.summary)} min briefing</p>
+            </div>
           </button>
         ))}
       </div>
@@ -468,471 +283,145 @@ function ChannelFilterRow({
   );
 }
 
-function SummaryCard({
-  video,
-  isExpanded,
-  onDelete,
-  onMinimize,
-  onToggle,
-}: {
-  video: Video;
-  isExpanded: boolean;
-  onDelete: () => void;
-  onMinimize: () => void;
-  onToggle: () => void;
-}) {
+function EditorialCard({ video, selected, onSelect, onDelete }: { video: Video; selected: boolean; onSelect: () => void; onDelete: () => void }) {
   return (
-    <article className={`overflow-hidden rounded-lg border bg-white transition-colors ${isExpanded ? "border-[#7F77DD]" : "border-[#E3E3EA] hover:border-[#7F77DD]"}`}>
-      <button type="button" className="group relative flex w-full gap-4 p-3 text-left" onClick={onToggle}>
-        <div className="relative h-[70px] w-[110px] shrink-0 overflow-hidden rounded-md bg-[#ECECF2]">
-          {video.thumbnailUrl ? (
-            <img src={video.thumbnailUrl} alt={video.title} className="h-full w-full object-cover" />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-              <Youtube className="h-6 w-6" />
-            </div>
-          )}
-          <span className="absolute bottom-1 right-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white">
-            {video.duration || "--:--"}
-          </span>
+    <article className={`group relative overflow-hidden rounded-2xl border bg-[#111118] transition ${selected ? "border-violet-500/70 shadow-[0_0_0_1px_rgba(139,92,246,.2)]" : "border-white/10 hover:-translate-y-0.5 hover:border-violet-500/40"}`}>
+      <button onClick={onSelect} className="block w-full text-left">
+        <div className="relative aspect-video overflow-hidden">
+          <VideoImage video={video} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+          <DurationBadge video={video} />
+          {video.processed && <span className="absolute left-2.5 top-2.5 rounded-md bg-violet-600 px-2 py-1 text-[10px] font-semibold">Ready</span>}
         </div>
-
-        <div className="min-w-0 flex-1 pr-16">
-          <h2 className="line-clamp-2 text-sm font-bold leading-5 text-foreground group-hover:text-[#7F77DD]">
-            {video.title}
-          </h2>
-          <p className="mt-1 truncate text-xs text-muted-foreground">
-            {video.sourceChannelName || "YouTube"} · {video.createdAt ? formatDistanceToNow(new Date(video.createdAt), { addSuffix: true }) : "recently"}
-          </p>
-          <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
-            {stripMarkdown(video.summary || "Generating summary...")}
-          </p>
+        <div className="p-4">
+          <h3 className="line-clamp-2 min-h-11 font-display text-base font-semibold leading-[1.35]">{video.title}</h3>
+          <VideoMeta video={video} className="mt-3 text-[#8f8b9c]" />
         </div>
-
-        <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-[#CFEADD] bg-[#EDF8F4] px-2 py-0.5 text-[11px] font-semibold text-[#1D9E75]">
-          <CheckCircle2 className="h-3 w-3" />
-          Ready
-        </span>
       </button>
-
-      {isExpanded && (
-        <InlineVideoFrame video={video} onDelete={onDelete} onMinimize={onMinimize} />
-      )}
+      <button onClick={onDelete} aria-label="Delete summary" className="absolute right-2 top-2 rounded-lg bg-black/70 p-2 text-white/70 opacity-0 transition hover:text-red-400 group-hover:opacity-100">
+        <Trash2 className="h-4 w-4" />
+      </button>
     </article>
   );
 }
 
-function InlineVideoFrame({
-  video,
-  onDelete,
-  onMinimize,
-}: {
-  video: Video;
-  onDelete: () => void;
-  onMinimize: () => void;
-}) {
+function BriefingPanel({ video, onClose }: { video: Video; onClose: () => void }) {
+  const [showVideo, setShowVideo] = useState(false);
   const { toast } = useToast();
-  const [copiedSection, setCopiedSection] = useState<"summary" | "transcript" | null>(null);
   const { isPreparing, isSpeaking, speak, stop } = useSpeech({
     onError: (message) => toast({ title: message, variant: "destructive" }),
   });
 
-  const copyToClipboard = (text: string, section: "summary" | "transcript") => {
-    navigator.clipboard.writeText(text);
-    setCopiedSection(section);
-    toast({ title: "Copied to clipboard" });
-    setTimeout(() => setCopiedSection(null), 2000);
-  };
+  useEffect(() => {
+    stop();
+    setShowVideo(false);
+  }, [video.id, stop]);
 
-  const handleSpeak = () => {
-    if (isPreparing || isSpeaking) {
-      stop();
-      return;
-    }
-
-    if (!video.summary) return;
-    speak(video.summary);
+  const toggleBriefing = () => {
+    if (isSpeaking || isPreparing) stop();
+    else if (video.summary) speak(video.summary);
   };
 
   return (
-    <div className="border-t border-[#E3E3EA] bg-white p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-foreground">{video.sourceChannelName || "YouTube"}</p>
-          <p className="text-xs text-muted-foreground">
-            Processed {video.createdAt ? new Date(video.createdAt).toLocaleDateString() : "recently"}
-          </p>
+    <aside className="h-fit overflow-hidden rounded-2xl border border-white/10 bg-[#111118] 2xl:sticky 2xl:top-[96px]">
+      <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-400">Selected briefing</p>
+          <p className="mt-1 text-xs text-[#777383]">{readingTime(video.summary)} minute read</p>
         </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 rounded-lg border-[#DCDCE6] text-xs"
-            onClick={onMinimize}
-          >
-            <Minimize2 className="mr-1.5 h-3.5 w-3.5" />
-            Minimize
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-            onClick={onDelete}
-            aria-label="Delete summary"
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        </div>
+        <button onClick={onClose} aria-label="Close briefing" className="rounded-lg p-2 text-[#777383] hover:bg-white/5 hover:text-white"><X className="h-4 w-4" /></button>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
-        <div className="overflow-hidden rounded-lg bg-black">
-          {video.url ? (
-            <div className="aspect-video">
-              <ReactPlayer src={video.url} width="100%" height="100%" controls />
-            </div>
+      <div className="p-4">
+        <div className="relative aspect-video overflow-hidden rounded-xl bg-black">
+          {showVideo ? (
+            <ReactPlayer src={video.url} controls playing width="100%" height="100%" />
           ) : (
-            <div className="flex aspect-video items-center justify-center text-sm text-white/70">
-              Video URL unavailable
-            </div>
+            <>
+              <VideoImage video={video} className="h-full w-full object-cover" />
+              <div className="absolute inset-0 flex items-center justify-center bg-black/25">
+                <button onClick={() => setShowVideo(true)} className="flex h-16 w-16 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white backdrop-blur transition hover:scale-105 hover:bg-violet-600">
+                  <Play className="ml-1 h-7 w-7 fill-current" />
+                </button>
+              </div>
+              <span className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-[11px] font-medium text-white/85">Watch video</span>
+            </>
           )}
         </div>
 
-        <Tabs defaultValue="summary" className="flex min-h-[360px] flex-col overflow-hidden rounded-lg border border-[#E3E3EA]">
-          <div className="border-b border-[#E3E3EA] bg-[#F6F6F8] p-2">
-            <TabsList className="grid w-full grid-cols-2 rounded-lg bg-white">
-              <TabsTrigger value="summary">Summary</TabsTrigger>
-              <TabsTrigger value="transcript">Transcript</TabsTrigger>
-            </TabsList>
+        <div className="mt-4 flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="font-display text-xl font-semibold leading-tight">{video.title}</h2>
+            <VideoMeta video={video} className="mt-2 text-[#8f8b9c]" />
           </div>
+          <button aria-label="Save briefing" className="rounded-lg border border-white/10 p-2 text-[#8f8b9c] hover:border-violet-500/50 hover:text-violet-300"><Bookmark className="h-4 w-4" /></button>
+        </div>
 
-          <TabsContent value="summary" className="m-0 min-h-0 flex-1">
-            <ScrollArea className="h-[320px]">
-              <div className="p-4">
-                {video.summary ? (
-                  <>
-                    <div className="mb-3 flex justify-end gap-2">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-xs"
-                        onClick={handleSpeak}
-                      >
-                        {isPreparing ? (
-                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                        ) : isSpeaking ? (
-                          <Square className="mr-1 h-3 w-3" />
-                        ) : (
-                          <Volume2 className="mr-1 h-3 w-3" />
-                        )}
-                        {isPreparing ? "Preparing..." : isSpeaking ? "Stop" : "Read aloud"}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-xs"
-                        onClick={() => copyToClipboard(video.summary || "", "summary")}
-                      >
-                        {copiedSection === "summary" ? <Check className="mr-1 h-3 w-3" /> : <Copy className="mr-1 h-3 w-3" />}
-                        {copiedSection === "summary" ? "Copied" : "Copy"}
-                      </Button>
-                    </div>
-                    <div className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
-                      {video.summary}
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex h-64 flex-col items-center justify-center text-center">
-                    <Loader2 className="mb-4 h-8 w-8 animate-spin text-[#7F77DD]" />
-                    <h3 className="font-semibold">Generating Summary</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      This usually takes about a minute.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </TabsContent>
+        <div className="mt-5 grid grid-cols-2 gap-2.5">
+          <Button onClick={toggleBriefing} disabled={!video.summary} className="h-auto min-h-12 rounded-xl bg-violet-600 px-3 py-2.5 font-semibold text-white hover:bg-violet-500">
+            {isPreparing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : isSpeaking ? <Pause className="mr-2 h-4 w-4 fill-current" /> : <Headphones className="mr-2 h-4 w-4" />}
+            <span className="text-left leading-tight">{isSpeaking ? "Pause briefing" : `Listen · ${readingTime(video.summary)} min`}</span>
+          </Button>
+          <Button onClick={() => setShowVideo(true)} variant="outline" className="min-h-12 rounded-xl border-white/15 bg-transparent text-white hover:bg-white/5 hover:text-white">
+            <Play className="mr-2 h-4 w-4 fill-current" /> Watch video
+          </Button>
+        </div>
 
-          <TabsContent value="transcript" className="m-0 min-h-0 flex-1">
-            <ScrollArea className="h-[320px]">
-              <div className="p-4">
-                {video.transcript ? (
-                  <>
-                    <div className="mb-3 flex justify-end">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-xs"
-                        onClick={() => copyToClipboard(video.transcript || "", "transcript")}
-                      >
-                        {copiedSection === "transcript" ? <Check className="mr-1 h-3 w-3" /> : <Copy className="mr-1 h-3 w-3" />}
-                        {copiedSection === "transcript" ? "Copied" : "Copy"}
-                      </Button>
-                    </div>
-                    <p className="whitespace-pre-wrap font-mono text-xs leading-6 text-muted-foreground">
-                      {video.transcript}
-                    </p>
-                  </>
-                ) : (
-                  <div className="flex h-64 items-center justify-center text-center">
-                    <p className="text-sm text-muted-foreground">Transcript not available yet.</p>
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </TabsContent>
+        {(isSpeaking || isPreparing) && (
+          <div className="mt-3 flex items-center gap-3 rounded-xl border border-violet-500/25 bg-violet-500/10 px-3 py-3">
+            <button onClick={toggleBriefing} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-600 text-white">
+              {isPreparing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pause className="h-4 w-4 fill-current" />}
+            </button>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between text-xs"><span className="font-semibold">{isPreparing ? "Preparing narration" : "Playing briefing"}</span><span className="text-violet-300">1×</span></div>
+              <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/3 animate-pulse rounded-full bg-violet-500" /></div>
+            </div>
+            <Volume2 className="h-4 w-4 text-violet-300" />
+          </div>
+        )}
+
+        <Tabs defaultValue="summary" className="mt-5">
+          <TabsList className="grid w-full grid-cols-2 border-b border-white/10 bg-transparent p-0">
+            <TabsTrigger value="summary" className="rounded-none border-b-2 border-transparent pb-3 text-[#8f8b9c] data-[state=active]:border-violet-500 data-[state=active]:bg-transparent data-[state=active]:text-violet-300">Summary</TabsTrigger>
+            <TabsTrigger value="transcript" className="rounded-none border-b-2 border-transparent pb-3 text-[#8f8b9c] data-[state=active]:border-violet-500 data-[state=active]:bg-transparent data-[state=active]:text-violet-300">Transcript</TabsTrigger>
+          </TabsList>
+          <TabsContent value="summary" className="max-h-[360px] overflow-y-auto pt-4"><BriefingText text={video.summary || "Summary is still being prepared."} /></TabsContent>
+          <TabsContent value="transcript" className="max-h-[360px] overflow-y-auto pt-4"><p className="whitespace-pre-wrap text-sm leading-7 text-[#aaa6b5]">{video.transcript || "Transcript unavailable."}</p></TabsContent>
         </Tabs>
-      </div>
-    </div>
-  );
-}
-
-function RightPanel({
-  channels,
-  channelsLoading,
-  recentCounts,
-  totalSummaries,
-  totalHoursSaved,
-  addChannelPending,
-  channelInput,
-  removingId,
-  showAddChannel,
-  updatingAll,
-  updatingId,
-  onAddChannel,
-  onChannelInputChange,
-  onRemoveChannel,
-  onShowAddChannelChange,
-  onUpdateAllChannels,
-  onUpdateChannel,
-}: {
-  channels: Channel[];
-  channelsLoading: boolean;
-  recentCounts: Map<string, number>;
-  totalSummaries: number;
-  totalHoursSaved: number;
-  addChannelPending: boolean;
-  channelInput: string;
-  removingId: number | null;
-  showAddChannel: boolean;
-  updatingAll: boolean;
-  updatingId: number | null;
-  onAddChannel: (event?: React.FormEvent) => void;
-  onChannelInputChange: (value: string) => void;
-  onRemoveChannel: (channel: Channel) => void;
-  onShowAddChannelChange: (value: boolean) => void;
-  onUpdateAllChannels: () => void;
-  onUpdateChannel: (channel: Channel) => void;
-}) {
-  return (
-    <aside className="hidden min-h-[calc(100vh-5rem)] border-l border-[#E3E3EA] bg-white pl-6 lg:block">
-      <div className="sticky top-20">
-        <section>
-          <h2 className="text-sm font-semibold text-foreground">This week</h2>
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <StatCard label="Summaries" value={totalSummaries.toString()} />
-            <StatCard label="Hours saved" value={totalHoursSaved.toString()} valueClassName="text-[#1D9E75]" />
-          </div>
-        </section>
-
-        <div className="my-6 h-px bg-[#E3E3EA]" />
-
-        <section>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-foreground">Channels</h2>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 rounded-lg border-[#DCDCE6] text-xs font-semibold text-[#7F77DD] hover:bg-[#F1F0FF] hover:text-[#7F77DD]"
-              onClick={onUpdateAllChannels}
-              disabled={channelsLoading || updatingAll || channels.length === 0}
-            >
-              {updatingAll ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
-              Update all
-            </Button>
-          </div>
-
-          <div className="space-y-2">
-            {channels.map((channel) => {
-              const newCount = recentCounts.get(channel.channelId) || 0;
-              const isUpdating = updatingAll || updatingId === channel.id;
-              const isRemoving = removingId === channel.id;
-
-              return (
-                <div key={channel.id} className="flex items-center gap-3 rounded-lg border border-transparent px-1 py-2 hover:border-[#E3E3EA]">
-                  <ChannelAvatar channel={channel} className="h-9 w-9" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{channel.channelName}</p>
-                    <p className="truncate text-[11px] text-muted-foreground">
-                      {new Date(channel.lastCheckedAt).toLocaleDateString()}
-                    </p>
-                  </div>
-                  {newCount > 0 ? (
-                    <span className="rounded-full bg-[#F1F0FF] px-2 py-0.5 text-[11px] font-semibold text-[#7F77DD]">
-                      {newCount} new
-                    </span>
-                  ) : (
-                    <span className="text-[11px] text-muted-foreground">up to date</span>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 rounded-md text-muted-foreground hover:text-[#7F77DD]"
-                    onClick={() => onUpdateChannel(channel)}
-                    disabled={isUpdating || isRemoving}
-                    aria-label={`Update ${channel.channelName}`}
-                  >
-                    {isUpdating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 rounded-md text-muted-foreground hover:text-destructive"
-                    onClick={() => onRemoveChannel(channel)}
-                    disabled={isUpdating || isRemoving}
-                    aria-label={`Remove ${channel.channelName}`}
-                  >
-                    {isRemoving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                  </Button>
-                </div>
-              );
-            })}
-          </div>
-
-          {showAddChannel && (
-            <form onSubmit={onAddChannel} className="mt-4 flex gap-2">
-              <Input
-                value={channelInput}
-                onChange={(event) => onChannelInputChange(event.target.value)}
-                placeholder="Paste channel URL"
-                className="h-9 rounded-lg border-[#DCDCE6] text-sm"
-                disabled={addChannelPending}
-              />
-              <Button
-                type="submit"
-                disabled={!channelInput.trim() || addChannelPending}
-                className="h-9 rounded-lg bg-[#7F77DD] px-3 text-white hover:bg-[#7169C9]"
-              >
-                {addChannelPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              </Button>
-            </form>
-          )}
-
-          <button
-            type="button"
-            className="mt-4 text-sm font-semibold text-[#7F77DD] hover:text-[#7169C9]"
-            onClick={() => onShowAddChannelChange(!showAddChannel)}
-          >
-            + Add channel
-          </button>
-        </section>
       </div>
     </aside>
   );
 }
 
-function ChannelAvatar({
-  channel,
-  className,
-  showDot = false,
-}: {
-  channel: Channel;
-  className?: string;
-  showDot?: boolean;
-}) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const initial = channel.channelName.charAt(0).toUpperCase();
-
-  return (
-    <span className={`relative flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#F1F0FF] text-sm font-bold text-[#7F77DD] ${className || ""}`}>
-      {channel.channelThumbnailUrl && !imageFailed ? (
-        <img
-          src={channel.channelThumbnailUrl}
-          alt={channel.channelName}
-          className="h-full w-full object-cover"
-          onError={() => setImageFailed(true)}
-        />
-      ) : (
-        initial
-      )}
-      {showDot && <span className="absolute right-0 top-0 h-3 w-3 rounded-full border-2 border-white bg-red-500" />}
-    </span>
-  );
+function BriefingText({ text }: { text: string }) {
+  const paragraphs = text.split(/\n+/).map((item) => stripMarkdown(item)).filter(Boolean);
+  return <div className="space-y-3">{paragraphs.map((paragraph, index) => <p key={index} className="text-sm leading-7 text-[#b8b4c2]">{paragraph}</p>)}</div>;
 }
 
-function StatCard({
-  label,
-  value,
-  valueClassName = "text-foreground",
-}: {
-  label: string;
-  value: string;
-  valueClassName?: string;
-}) {
-  return (
-    <div className="rounded-lg border border-[#E3E3EA] bg-white p-3">
-      <p className={`text-2xl font-bold leading-none ${valueClassName}`}>{value}</p>
-      <p className="mt-1 text-xs text-muted-foreground">{label}</p>
-    </div>
-  );
+function VideoImage({ video, className }: { video: Video; className: string }) {
+  return video.thumbnailUrl ? <img src={video.thumbnailUrl} alt={video.title} className={className} /> : <div className={`${className} flex items-center justify-center bg-[#1a1922]`}><Youtube className="h-10 w-10 text-[#4f4b5a]" /></div>;
 }
 
-function LoadingState() {
-  return (
-    <div className="flex items-center justify-center rounded-lg border border-[#E3E3EA] bg-white py-16">
-      <Loader2 className="h-8 w-8 animate-spin text-[#7F77DD]" />
-    </div>
-  );
+function DurationBadge({ video }: { video: Video }) {
+  return <span className="absolute bottom-2 right-2 rounded-md bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold text-white">{video.duration || "--:--"}</span>;
+}
+
+function VideoMeta({ video, className }: { video: Video; className?: string }) {
+  return <p className={`flex items-center gap-2 text-xs ${className || ""}`}><span className="truncate">{video.sourceChannelName || "YouTube"}</span><span>•</span><span className="shrink-0">{video.createdAt ? formatDistanceToNow(new Date(video.createdAt), { addSuffix: true }) : "recently"}</span>{video.processed && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-violet-400" />}</p>;
+}
+
+function ChannelAvatar({ channel }: { channel: Channel }) {
+  return channel.channelThumbnailUrl ? <img src={channel.channelThumbnailUrl} alt="" className="h-6 w-6 shrink-0 rounded-full object-cover" /> : <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-500/15 text-[10px] font-bold text-violet-300">{channel.channelName.charAt(0)}</span>;
 }
 
 function EmptyState() {
-  return (
-    <div className="rounded-lg border border-dashed border-[#DCDCE6] bg-white py-16 text-center">
-      <Youtube className="mx-auto h-9 w-9 text-muted-foreground/50" />
-      <h2 className="mt-3 text-lg font-semibold">No summaries found</h2>
-      <p className="mt-1 text-sm text-muted-foreground">Paste a YouTube URL in the top bar to create one.</p>
-    </div>
-  );
+  return <div className="mx-auto mt-20 max-w-lg rounded-3xl border border-dashed border-white/15 bg-[#111118] px-8 py-16 text-center"><Sparkles className="mx-auto h-9 w-9 text-violet-400" /><h1 className="mt-4 text-2xl font-semibold">Your briefing desk is ready</h1><p className="mt-2 text-sm leading-6 text-[#8f8b9c]">Paste a YouTube URL above to turn a long video into a concise briefing you can read or listen to.</p></div>;
 }
 
 function stripMarkdown(value: string) {
-  return value
-    .replace(/[#*_>`~-]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  return value.replace(/[#*_>`~-]/g, "").replace(/\s+/g, " ").trim();
 }
 
-function matchesVideoChannel(video: Video, channel: Channel) {
-  if (video.sourceChannelId === channel.channelId) return true;
-
-  const sourceName = normalizeMatchText(video.sourceChannelName || "");
-  const channelName = normalizeMatchText(channel.channelName);
-  if (sourceName && (sourceName === channelName || sourceName.includes(channelName))) {
-    return true;
-  }
-
-  const title = normalizeMatchText(video.title);
-  const channelAliases = [
-    channelName,
-    channelName.replace(/\bpodcast\b/g, "").trim(),
-    channelName.replace(/\bofficial\b/g, "").trim(),
-  ].filter(Boolean);
-
-  return channelAliases.some((alias) => alias.length >= 3 && title.includes(alias));
-}
-
-function normalizeMatchText(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/&amp;/g, "&")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+function readingTime(value?: string | null) {
+  return Math.max(1, Math.round((stripMarkdown(value || "").split(/\s+/).filter(Boolean).length || 1) / 180));
 }

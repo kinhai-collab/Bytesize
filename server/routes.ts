@@ -207,6 +207,13 @@ async function fetchTranscriptText(
         if (typeof data.transcript === "string" && data.transcript.trim()) {
           return data.transcript.trim();
         }
+        if (Array.isArray(data.transcript)) {
+          const transcript = data.transcript
+            .map((item: any) => item.text || "")
+            .join(" ")
+            .trim();
+          if (transcript) return transcript;
+        }
         if (Array.isArray(data.content)) {
           const transcript = data.content.map((item: any) => item.text || "").join(" ").trim();
           if (transcript) return transcript;

@@ -15,6 +15,7 @@ import { tmpdir } from "os";
 import path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import ffmpegPath from "ffmpeg-static";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -107,7 +108,8 @@ async function transcribeDownloadedAudio(videoUrl: string) {
       noWarnings: true,
     });
 
-    await execFileAsync("ffmpeg", [
+    if (!ffmpegPath) throw new Error("Bundled ffmpeg binary is unavailable");
+    await execFileAsync(ffmpegPath, [
       "-hide_banner",
       "-loglevel",
       "error",

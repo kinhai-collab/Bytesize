@@ -240,39 +240,29 @@ async function updateFollowedChannel(channelId: number, userId: number) {
     }, userId);
   }
 
-  const lastChecked = isInitialChannelCheck(channel)
-    ? NEVER_CHECKED.toISOString()
-    : channel.lastCheckedAt?.toISOString() || NEVER_CHECKED.toISOString();
   const videosRes = await fetch(
-    `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&publishedAfter=${lastChecked}&maxResults=25&key=${YOUTUBE_API_KEY}`,
+    `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&maxResults=25&key=${YOUTUBE_API_KEY}`,
   );
-  let videosData = await videosRes.json();
-  let usedInitialBackfill = false;
+  const videosData = await videosRes.json();
+
+  if (!videosRes.ok) {
+    throw new Error(videosData.error?.message || `YouTube request failed (${videosRes.status})`);
+  }
 
   if (!videosData.items || videosData.items.length === 0) {
-    if (shouldRecoverInitialBackfill(channel)) {
-      const backfillRes = await fetch(
-        `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&type=video&order=date&maxResults=25&key=${YOUTUBE_API_KEY}`,
-      );
-      videosData = await backfillRes.json();
-      usedInitialBackfill = Boolean(videosData.items?.length);
-    }
-
-    if (!videosData.items || videosData.items.length === 0) {
-      await storage.updateChannelLastChecked(channelId, userId);
-      return {
-        channelId,
-        channelName: channel.channelName,
-        message: "No new videos found",
-        summarized: 0,
-        reusedCached: 0,
-        updatedCachedMetadata: 0,
-        skippedNoTranscript: 0,
-        skippedShortTranscript: 0,
-        failed: 0,
-        videos: [],
-      };
-    }
+    await storage.updateChannelLastChecked(channelId, userId);
+    return {
+      channelId,
+      channelName: channel.channelName,
+      message: "No videos found on this channel",
+      summarized: 0,
+      reusedCached: 0,
+      updatedCachedMetadata: 0,
+      skippedNoTranscript: 0,
+      skippedShortTranscript: 0,
+      failed: 0,
+      videos: [],
+    };
   }
 
   const summarized = [];
@@ -380,7 +370,7 @@ async function updateFollowedChannel(channelId: number, userId: number) {
     channelName: channel.channelName,
     message:
       summarized.length > 0 || reusedCached > 0
-        ? `${usedInitialBackfill ? "Recovered initial channel backfill. " : ""}Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and reused ${reusedCached} cached summary/summaries` : ""}`
+        ? `Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and found ${reusedCached} existing summary/summaries` : ""}`
         : `Found ${videosData.items.length} recent video(s), but none could be summarized. ${skippedNoTranscript + skippedShortTranscript} had no usable transcript${failed ? ` and ${failed} failed while processing` : ""}.`,
     summarized: summarized.length,
     reusedCached,
@@ -655,6 +645,12 @@ export async function registerRoutes(
     try {
       const channelId = Number(req.params.id); // Get the channel ID from the URL
       const user = currentUser(req);
+      if (!Number.isInteger(channelId)) {
+        return res.status(400).json({ message: "Invalid channel ID" });
+      }
+      return res.json(await updateFollowedChannel(channelId, user.id));
+
+      /* Legacy inline updater retained temporarily for safe rollback.
       const channels = await storage.getChannels(user.id);
       let channel = channels.find((c) => c.id === channelId); // Find this specific channel
 
@@ -821,6 +817,7 @@ export async function registerRoutes(
         failed,
         videos: summarized,
       });
+      */
     } catch (err) {
       console.error("Update channel error:", err);
       res.status(500).json({ message: "Failed to update channel" });

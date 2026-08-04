@@ -5,7 +5,6 @@ import { storage } from "./storage";
 import { currentUser, registerAuthRoutes, requireUser } from "./auth";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { fetchTranscript as fetchYouTubeTranscript } from "youtube-transcript/dist/youtube-transcript.esm.js";
 import { createReadStream } from "fs";
@@ -15,10 +14,6 @@ import path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import ffmpegPath from "ffmpeg-static";
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -59,6 +54,21 @@ function buildSummaryPrompt(title: string, transcript: string) {
     "Transcript:",
     transcript.slice(0, 100000),
   ].join("\n");
+}
+
+async function generateSummary(title: string, transcript: string) {
+  const response = await openai.chat.completions.create({
+    model: "gpt-5.2",
+    max_completion_tokens: 1000,
+    messages: [
+      {
+        role: "user",
+        content: buildSummaryPrompt(title, transcript),
+      },
+    ],
+  });
+
+  return response.choices[0]?.message?.content?.trim() || "No summary.";
 }
 
 type YouTubeChannelInfo = {
@@ -481,21 +491,7 @@ async function updateFollowedChannel(channelId: number, userId: number) {
         continue;
       }
 
-      const summaryRes = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 650,
-        messages: [
-          {
-            role: "user",
-            content: buildSummaryPrompt(videoTitle, transcriptText),
-          },
-        ],
-      });
-
-      const summary =
-        summaryRes.content[0].type === "text"
-          ? summaryRes.content[0].text
-          : "No summary.";
+      const summary = await generateSummary(videoTitle, transcriptText);
 
       const savedVideo = await storage.createVideo({
         url: videoUrl,
@@ -636,15 +632,7 @@ export async function registerRoutes(
 
       let summary = "";
       try {
-        const response = await anthropic.messages.create({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 650,
-          messages: [{ role: "user", content: buildSummaryPrompt(title, transcriptText) }],
-        });
-        summary =
-          response.content[0].type === "text"
-            ? response.content[0].text
-            : "No summary.";
+        summary = await generateSummary(title, transcriptText);
       } catch (e) {
         return res.status(500).json({ message: "Failed to generate summary." });
       }
@@ -879,22 +867,8 @@ export async function registerRoutes(
             continue; // Skip if transcript too short
           }
 
-          // Generate AI summary using Claude (same as existing feature)
-          const summaryRes = await anthropic.messages.create({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 650,
-            messages: [
-              {
-                role: "user",
-                content: buildSummaryPrompt(videoTitle, transcriptText),
-              },
-            ],
-          });
-
-          const summary =
-            summaryRes.content[0].type === "text"
-              ? summaryRes.content[0].text
-              : "No summary.";
+          // Generate the summary with the configured Replit AI integration.
+          const summary = await generateSummary(videoTitle, transcriptText);
 
           // Save this video + summary to the database
           const savedVideo = await storage.createVideo({

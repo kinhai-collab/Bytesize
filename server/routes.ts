@@ -8,6 +8,13 @@ import { z } from "zod";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { fetchTranscript as fetchYouTubeTranscript } from "youtube-transcript/dist/youtube-transcript.esm.js";
+import youtubeDl from "youtube-dl-exec";
+import { createReadStream } from "fs";
+import { mkdtemp, readdir, rm } from "fs/promises";
+import { tmpdir } from "os";
+import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -22,6 +29,8 @@ const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY; // Our new YouTube Data API key
 const NEVER_CHECKED = new Date(0);
 const BROKEN_INITIAL_CHECK_CUTOFF = new Date("2026-06-08T00:00:00.000Z");
+const execFileAsync = promisify(execFile);
+const MAX_AUDIO_FALLBACKS_PER_CHANNEL_REFRESH = 1;
 
 function buildSummaryPrompt(title: string, transcript: string) {
   return [
@@ -80,7 +89,62 @@ async function getCachedVideoByYouTubeId(videoId: string, userId: number) {
   });
 }
 
-async function fetchTranscriptText(videoUrl: string) {
+async function transcribeDownloadedAudio(videoUrl: string) {
+  const workDir = await mkdtemp(path.join(tmpdir(), "bytesize-audio-"));
+  const audioPath = path.join(workDir, "source.mp3");
+  const chunkPattern = path.join(workDir, "chunk-%03d.mp3");
+
+  try {
+    await youtubeDl(videoUrl, {
+      extractAudio: true,
+      audioFormat: "mp3",
+      audioQuality: 9,
+      format: "bestaudio/best",
+      noPlaylist: true,
+      output: audioPath,
+      jsRuntimes: "node",
+      remoteComponent: "ejs:github",
+      noWarnings: true,
+    });
+
+    await execFileAsync("ffmpeg", [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-i",
+      audioPath,
+      "-f",
+      "segment",
+      "-segment_time",
+      "600",
+      "-c",
+      "copy",
+      chunkPattern,
+    ]);
+
+    const chunkFiles = (await readdir(workDir))
+      .filter((name) => name.startsWith("chunk-") && name.endsWith(".mp3"))
+      .sort();
+    const transcriptParts: string[] = [];
+
+    for (const chunkFile of chunkFiles) {
+      const result = await openai.audio.transcriptions.create({
+        file: createReadStream(path.join(workDir, chunkFile)),
+        model: "gpt-4o-mini-transcribe",
+      });
+      if (result.text?.trim()) transcriptParts.push(result.text.trim());
+    }
+
+    return transcriptParts.join(" ").trim();
+  } catch (error) {
+    console.error(`Audio transcription fallback failed for ${videoUrl}.`, error);
+    return "";
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+async function fetchTranscriptText(videoUrl: string, allowAudioFallback = false) {
   if (RAPIDAPI_KEY) {
     try {
       const response = await fetch(
@@ -114,11 +178,13 @@ async function fetchTranscriptText(videoUrl: string) {
     const videoId = extractYouTubeVideoId(videoUrl);
     if (!videoId) return "";
     const transcript = await fetchYouTubeTranscript(videoId);
-    return transcript.map((item) => item.text || "").join(" ").trim();
+    const text = transcript.map((item) => item.text || "").join(" ").trim();
+    if (text) return text;
   } catch (error) {
     console.warn(`YouTube captions unavailable for ${videoUrl}.`, error);
-    return "";
   }
+
+  return allowAudioFallback ? transcribeDownloadedAudio(videoUrl) : "";
 }
 
 function formatYouTubeDuration(duration: string | undefined) {
@@ -313,6 +379,8 @@ async function updateFollowedChannel(channelId: number, userId: number) {
   let skippedNoTranscript = 0;
   let skippedShortTranscript = 0;
   let failed = 0;
+  let audioFallbacksUsed = 0;
+  let deferredAudioFallback = 0;
 
   for (const item of videosData.items) {
     const videoId = item.id.videoId;
@@ -343,10 +411,13 @@ async function updateFollowedChannel(channelId: number, userId: number) {
         continue;
       }
 
-      const transcriptText = await fetchTranscriptText(videoUrl);
+      const allowAudioFallback = audioFallbacksUsed < MAX_AUDIO_FALLBACKS_PER_CHANNEL_REFRESH;
+      if (allowAudioFallback) audioFallbacksUsed++;
+      const transcriptText = await fetchTranscriptText(videoUrl, allowAudioFallback);
 
       if (!transcriptText || transcriptText.length < 50) {
         skippedShortTranscript++;
+        if (!allowAudioFallback) deferredAudioFallback++;
         continue;
       }
 
@@ -392,12 +463,13 @@ async function updateFollowedChannel(channelId: number, userId: number) {
     message:
       summarized.length > 0 || reusedCached > 0
         ? `Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and found ${reusedCached} existing summary/summaries` : ""}`
-        : `Found ${videosData.items.length} recent video(s), but none could be summarized. ${skippedNoTranscript + skippedShortTranscript} had no usable transcript${failed ? ` and ${failed} failed while processing` : ""}.`,
+        : `Found ${videosData.items.length} recent video(s), but none could be summarized. ${skippedNoTranscript + skippedShortTranscript} had no usable transcript${deferredAudioFallback ? `; ${deferredAudioFallback} will retry with audio on later refreshes` : ""}${failed ? ` and ${failed} failed while processing` : ""}.`,
     summarized: summarized.length,
     reusedCached,
     updatedCachedMetadata,
     skippedNoTranscript,
     skippedShortTranscript,
+    deferredAudioFallback,
     failed,
     videos: summarized,
   };
@@ -507,7 +579,7 @@ export async function registerRoutes(
       } catch (e) {}
       const videoDetails = await fetchVideoDetails(videoId);
 
-      const transcriptText = await fetchTranscriptText(url);
+      const transcriptText = await fetchTranscriptText(url, true);
 
       if (!transcriptText || transcriptText.length < 50) {
         return res

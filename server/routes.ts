@@ -26,6 +26,7 @@ const openai = new OpenAI({
 });
 
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+const RAPIDAPI_TRANSCRIPT_HOST = "youtube-transcript3.p.rapidapi.com";
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY; // Our new YouTube Data API key
 const NEVER_CHECKED = new Date(0);
 const BROKEN_INITIAL_CHECK_CUTOFF = new Date("2026-06-08T00:00:00.000Z");
@@ -191,17 +192,21 @@ async function fetchTranscriptText(
   if (RAPIDAPI_KEY) {
     try {
       const response = await fetch(
-        `https://youtube-transcripts.p.rapidapi.com/youtube/transcript?url=${encodeURIComponent(videoUrl)}`,
+        `https://${RAPIDAPI_TRANSCRIPT_HOST}/api/transcript-with-url?url=${encodeURIComponent(videoUrl)}&flat_text=true&lang=en`,
         {
           headers: {
             "x-rapidapi-key": RAPIDAPI_KEY,
-            "x-rapidapi-host": "youtube-transcripts.p.rapidapi.com",
+            "x-rapidapi-host": RAPIDAPI_TRANSCRIPT_HOST,
+            "Content-Type": "application/json",
           },
         },
       );
 
       if (response.ok) {
         const data = await response.json();
+        if (typeof data.transcript === "string" && data.transcript.trim()) {
+          return data.transcript.trim();
+        }
         if (Array.isArray(data.content)) {
           const transcript = data.content.map((item: any) => item.text || "").join(" ").trim();
           if (transcript) return transcript;
@@ -578,22 +583,8 @@ export async function registerRoutes(
   app.get("/api/test-transcript", async (req, res) => {
     const testUrl = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
     try {
-      const apiUrl = `https://youtube-transcripts.p.rapidapi.com/youtube/transcript?url=${encodeURIComponent(testUrl)}`;
-      const response = await fetch(apiUrl, {
-        method: "GET",
-        headers: {
-          "x-rapidapi-key": RAPIDAPI_KEY!,
-          "x-rapidapi-host": "youtube-transcripts.p.rapidapi.com",
-        },
-      });
-      if (!response.ok) throw new Error(`API error: ${response.status}`);
-      const data = await response.json();
-      let transcriptText = "";
-      if (data.content && Array.isArray(data.content)) {
-        transcriptText = data.content
-          .map((item: any) => item.text || "")
-          .join(" ");
-      }
+      const transcriptText = await fetchTranscriptText(testUrl);
+      if (!transcriptText) throw new Error("No transcript returned");
       res.json({
         success: true,
         transcriptLength: transcriptText.length,

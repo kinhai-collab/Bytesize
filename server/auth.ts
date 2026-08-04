@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import session from "express-session";
-import createMemoryStore from "memorystore";
+import connectPgSimple from "connect-pg-simple";
 import crypto from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { db, pool } from "./db";
@@ -53,14 +53,16 @@ export async function ensureAuthSchema() {
 }
 
 export function configureAuth(app: Express) {
-  const MemoryStore = createMemoryStore(session);
+  const PostgresStore = connectPgSimple(session);
   const sessionSecret = process.env.SESSION_SECRET || process.env.DATABASE_URL || "bytesize-dev-session";
 
   app.set("trust proxy", 1);
   app.use(
     session({
-      store: new MemoryStore({
-        checkPeriod: 1000 * 60 * 60 * 24,
+      store: new PostgresStore({
+        pool,
+        tableName: "session",
+        createTableIfMissing: false,
       }),
       name: "bytesize.sid",
       secret: sessionSecret,

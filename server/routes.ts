@@ -8,9 +8,8 @@ import { z } from "zod";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { fetchTranscript as fetchYouTubeTranscript } from "youtube-transcript/dist/youtube-transcript.esm.js";
-import youtubeDl from "youtube-dl-exec";
 import { createReadStream } from "fs";
-import { mkdtemp, readdir, rm } from "fs/promises";
+import { access, chmod, mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import path from "path";
 import { execFile } from "child_process";
@@ -32,6 +31,8 @@ const NEVER_CHECKED = new Date(0);
 const BROKEN_INITIAL_CHECK_CUTOFF = new Date("2026-06-08T00:00:00.000Z");
 const execFileAsync = promisify(execFile);
 const MAX_AUDIO_FALLBACKS_PER_CHANNEL_REFRESH = 1;
+const YT_DLP_RUNTIME_PATH = path.join(tmpdir(), "bytesize-yt-dlp");
+let ytDlpSetup: Promise<string> | null = null;
 
 function buildSummaryPrompt(title: string, transcript: string) {
   return [
@@ -96,17 +97,25 @@ async function transcribeDownloadedAudio(videoUrl: string) {
   const chunkPattern = path.join(workDir, "chunk-%03d.mp3");
 
   try {
-    await youtubeDl(videoUrl, {
-      extractAudio: true,
-      audioFormat: "mp3",
-      audioQuality: 9,
-      format: "bestaudio/best",
-      noPlaylist: true,
-      output: audioPath,
-      jsRuntimes: "node",
-      remoteComponent: "ejs:github",
-      noWarnings: true,
-    });
+    const ytDlpPath = await ensureYtDlpBinary();
+    await execFileAsync(ytDlpPath, [
+      videoUrl,
+      "--extract-audio",
+      "--audio-format",
+      "mp3",
+      "--audio-quality",
+      "9",
+      "--format",
+      "bestaudio/best",
+      "--no-playlist",
+      "--output",
+      audioPath,
+      "--js-runtimes",
+      "node",
+      "--remote-components",
+      "ejs:github",
+      "--no-warnings",
+    ], { maxBuffer: 10 * 1024 * 1024 });
 
     if (!ffmpegPath) throw new Error("Bundled ffmpeg binary is unavailable");
     await execFileAsync(ffmpegPath, [
@@ -144,6 +153,31 @@ async function transcribeDownloadedAudio(videoUrl: string) {
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+}
+
+async function ensureYtDlpBinary() {
+  if (!ytDlpSetup) {
+    ytDlpSetup = (async () => {
+      try {
+        await access(YT_DLP_RUNTIME_PATH);
+        return YT_DLP_RUNTIME_PATH;
+      } catch {}
+
+      const response = await fetch(
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+      );
+      if (!response.ok) {
+        throw new Error(`Unable to provision yt-dlp (${response.status})`);
+      }
+      await writeFile(YT_DLP_RUNTIME_PATH, Buffer.from(await response.arrayBuffer()));
+      await chmod(YT_DLP_RUNTIME_PATH, 0o755);
+      return YT_DLP_RUNTIME_PATH;
+    })().catch((error) => {
+      ytDlpSetup = null;
+      throw error;
+    });
+  }
+  return ytDlpSetup;
 }
 
 async function fetchTranscriptText(videoUrl: string, allowAudioFallback = false) {

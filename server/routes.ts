@@ -7,6 +7,7 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+import { fetchTranscript as fetchYouTubeTranscript } from "youtube-transcript/dist/youtube-transcript.esm.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -77,6 +78,47 @@ async function getCachedVideoByYouTubeId(videoId: string, userId: number) {
     const cachedVideoId = extractYouTubeVideoId(video.url);
     return cachedVideoId === videoId && Boolean(video.summary);
   });
+}
+
+async function fetchTranscriptText(videoUrl: string) {
+  if (RAPIDAPI_KEY) {
+    try {
+      const response = await fetch(
+        `https://youtube-transcripts.p.rapidapi.com/youtube/transcript?url=${encodeURIComponent(videoUrl)}`,
+        {
+          headers: {
+            "x-rapidapi-key": RAPIDAPI_KEY,
+            "x-rapidapi-host": "youtube-transcripts.p.rapidapi.com",
+          },
+        },
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data.content)) {
+          const transcript = data.content.map((item: any) => item.text || "").join(" ").trim();
+          if (transcript) return transcript;
+        }
+        if (typeof data.content === "string" && data.content.trim()) {
+          return data.content.trim();
+        }
+      } else {
+        console.warn(`Transcript API returned ${response.status}; trying YouTube captions.`);
+      }
+    } catch (error) {
+      console.warn("Transcript API failed; trying YouTube captions.", error);
+    }
+  }
+
+  try {
+    const videoId = extractYouTubeVideoId(videoUrl);
+    if (!videoId) return "";
+    const transcript = await fetchYouTubeTranscript(videoId);
+    return transcript.map((item) => item.text || "").join(" ").trim();
+  } catch (error) {
+    console.warn(`YouTube captions unavailable for ${videoUrl}.`, error);
+    return "";
+  }
 }
 
 function formatYouTubeDuration(duration: string | undefined) {
@@ -301,28 +343,7 @@ async function updateFollowedChannel(channelId: number, userId: number) {
         continue;
       }
 
-      const transcriptRes = await fetch(
-        `https://youtube-transcripts.p.rapidapi.com/youtube/transcript?url=${encodeURIComponent(videoUrl)}`,
-        {
-          headers: {
-            "x-rapidapi-key": RAPIDAPI_KEY!,
-            "x-rapidapi-host": "youtube-transcripts.p.rapidapi.com",
-          },
-        },
-      );
-
-      if (!transcriptRes.ok) {
-        skippedNoTranscript++;
-        continue;
-      }
-
-      const transcriptData = await transcriptRes.json();
-      let transcriptText = "";
-      if (transcriptData.content && Array.isArray(transcriptData.content)) {
-        transcriptText = transcriptData.content
-          .map((i: any) => i.text || "")
-          .join(" ");
-      }
+      const transcriptText = await fetchTranscriptText(videoUrl);
 
       if (!transcriptText || transcriptText.length < 50) {
         skippedShortTranscript++;
@@ -486,31 +507,7 @@ export async function registerRoutes(
       } catch (e) {}
       const videoDetails = await fetchVideoDetails(videoId);
 
-      let transcriptText = "";
-      try {
-        const apiUrl = `https://youtube-transcripts.p.rapidapi.com/youtube/transcript?url=${encodeURIComponent(url)}`;
-        const response = await fetch(apiUrl, {
-          method: "GET",
-          headers: {
-            "x-rapidapi-key": RAPIDAPI_KEY!,
-            "x-rapidapi-host": "youtube-transcripts.p.rapidapi.com",
-          },
-        });
-        if (!response.ok)
-          return res
-            .status(400)
-            .json({ message: "This video doesn't have captions available." });
-        const data = await response.json();
-        if (data.content && Array.isArray(data.content)) {
-          transcriptText = data.content
-            .map((item: any) => item.text || "")
-            .join(" ");
-        } else if (typeof data.content === "string") {
-          transcriptText = data.content;
-        }
-      } catch (e: any) {
-        return res.status(400).json({ message: "Could not fetch transcript." });
-      }
+      const transcriptText = await fetchTranscriptText(url);
 
       if (!transcriptText || transcriptText.length < 50) {
         return res

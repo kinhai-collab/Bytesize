@@ -91,7 +91,7 @@ async function getCachedVideoByYouTubeId(videoId: string, userId: number) {
   });
 }
 
-async function transcribeDownloadedAudio(videoUrl: string) {
+async function transcribeDownloadedAudio(videoUrl: string, diagnostics: string[]) {
   const workDir = await mkdtemp(path.join(tmpdir(), "bytesize-audio-"));
   const audioPath = path.join(workDir, "source.mp3");
   const chunkPattern = path.join(workDir, "chunk-%03d.mp3");
@@ -149,6 +149,9 @@ async function transcribeDownloadedAudio(videoUrl: string) {
     return transcriptParts.join(" ").trim();
   } catch (error) {
     console.error(`Audio transcription fallback failed for ${videoUrl}.`, error);
+    diagnostics.push(
+      (error instanceof Error ? error.message : String(error)).slice(0, 500),
+    );
     return "";
   } finally {
     await rm(workDir, { recursive: true, force: true });
@@ -180,7 +183,11 @@ async function ensureYtDlpBinary() {
   return ytDlpSetup;
 }
 
-async function fetchTranscriptText(videoUrl: string, allowAudioFallback = false) {
+async function fetchTranscriptText(
+  videoUrl: string,
+  allowAudioFallback = false,
+  diagnostics: string[] = [],
+) {
   if (RAPIDAPI_KEY) {
     try {
       const response = await fetch(
@@ -220,7 +227,7 @@ async function fetchTranscriptText(videoUrl: string, allowAudioFallback = false)
     console.warn(`YouTube captions unavailable for ${videoUrl}.`, error);
   }
 
-  return allowAudioFallback ? transcribeDownloadedAudio(videoUrl) : "";
+  return allowAudioFallback ? transcribeDownloadedAudio(videoUrl, diagnostics) : "";
 }
 
 function formatYouTubeDuration(duration: string | undefined) {
@@ -417,6 +424,7 @@ async function updateFollowedChannel(channelId: number, userId: number) {
   let failed = 0;
   let audioFallbacksUsed = 0;
   let deferredAudioFallback = 0;
+  const audioFallbackErrors: string[] = [];
 
   for (const item of videosData.items) {
     const videoId = item.id.videoId;
@@ -449,7 +457,11 @@ async function updateFollowedChannel(channelId: number, userId: number) {
 
       const allowAudioFallback = audioFallbacksUsed < MAX_AUDIO_FALLBACKS_PER_CHANNEL_REFRESH;
       if (allowAudioFallback) audioFallbacksUsed++;
-      const transcriptText = await fetchTranscriptText(videoUrl, allowAudioFallback);
+      const transcriptText = await fetchTranscriptText(
+        videoUrl,
+        allowAudioFallback,
+        audioFallbackErrors,
+      );
 
       if (!transcriptText || transcriptText.length < 50) {
         skippedShortTranscript++;
@@ -499,13 +511,14 @@ async function updateFollowedChannel(channelId: number, userId: number) {
     message:
       summarized.length > 0 || reusedCached > 0
         ? `Successfully summarized ${summarized.length} new video(s)${reusedCached ? ` and found ${reusedCached} existing summary/summaries` : ""}`
-        : `Found ${videosData.items.length} recent video(s), but none could be summarized. ${skippedNoTranscript + skippedShortTranscript} had no usable transcript${deferredAudioFallback ? `; ${deferredAudioFallback} will retry with audio on later refreshes` : ""}${failed ? ` and ${failed} failed while processing` : ""}.`,
+        : `Found ${videosData.items.length} recent video(s), but none could be summarized. ${skippedNoTranscript + skippedShortTranscript} had no usable transcript${deferredAudioFallback ? `; ${deferredAudioFallback} will retry with audio on later refreshes` : ""}${failed ? ` and ${failed} failed while processing` : ""}.${audioFallbackErrors[0] ? ` Audio fallback error: ${audioFallbackErrors[0]}` : ""}`,
     summarized: summarized.length,
     reusedCached,
     updatedCachedMetadata,
     skippedNoTranscript,
     skippedShortTranscript,
     deferredAudioFallback,
+    audioFallbackErrors,
     failed,
     videos: summarized,
   };
